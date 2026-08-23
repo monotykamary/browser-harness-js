@@ -14,11 +14,12 @@
  */
 
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
-import { axView, axDiff, parseAxRefs } from './axview.ts';
+import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
 import { RecordingManager } from './recording.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { extraHelpers } from './helpers.ts';
 
 // Read once at boot and cache for the process lifetime, so /health reports the
 // version the daemon was *started* with — not the one currently on disk. That
@@ -56,8 +57,10 @@ function resolveAxBackendId(
 }
 
 /** Click the center of an axView ref. `refs` is a Map from parseAxRefs or the axView string itself. */
-async function axClick(ref: number | string, refs: Map<number, number> | string): Promise<void> {
-  const backendNodeId = resolveAxBackendId(ref, refs);
+async function axClick(ref: number | string, refs?: Map<number, number> | string | null): Promise<void> {
+  const backendNodeId = extraHelpers.isLocatorString(ref)
+    ? await extraHelpers.resolveLocator(ref as string)
+    : resolveAxBackendId(ref, (refs as Map<number, number> | string) ?? new Map());
   const { model } = await session.domains.DOM.getBoxModel({ backendNodeId });
   const x = model.content[0]!;
   const y = model.content[1]!;
@@ -68,13 +71,28 @@ async function axClick(ref: number | string, refs: Map<number, number> | string)
 }
 
 /** Focus an axView ref (click) then insert text. */
-async function axType(ref: number | string, refs: Map<number, number> | string, text: string): Promise<void> {
-  await axClick(ref, refs);
+async function axType(ref: number | string, refs: Map<number, number> | string | null | undefined, text: string): Promise<void> {
+  await axClick(ref, refs ?? undefined);
   await session.domains.Input.insertText({ text });
 }
 
 (globalThis as any).axClick = axClick;
 (globalThis as any).axType = axType;
+// Agent-facing helpers from helpers.ts — exactly the "things CDP structurally
+// lacks" carve-out from the README ("No helpers file. No click(), no goto()"):
+// a drainable async event queue, modal-dialog detection, locator resolution
+// via the accessibility tree, and a per-site recipe registry. None wrap a
+// CDP method; the agent can still call session.Domain.method(...) for everything.
+(globalThis as any).parseAxLocators = parseAxLocators;
+(globalThis as any).isLocatorString = extraHelpers.isLocatorString;
+(globalThis as any).resolveLocator = extraHelpers.resolveLocator;
+(globalThis as any).attachSignals = extraHelpers.attachSignals;
+(globalThis as any).drainSignals = extraHelpers.drainSignals;
+(globalThis as any).detachSignals = extraHelpers.detachSignals;
+(globalThis as any).pageInfo = extraHelpers.pageInfo;
+(globalThis as any).help = extraHelpers.help;
+(globalThis as any).listLearnings = extraHelpers.listLearnings;
+(globalThis as any).learnings = extraHelpers.learnings;
 (globalThis as any).startRecording = (name?: string, title?: string) => recording.start(name, title);
 (globalThis as any).stopRecording = () => recording.stop();
 (globalThis as any).recordingStatus = () => recording.status();

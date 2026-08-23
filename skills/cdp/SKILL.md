@@ -9,7 +9,7 @@ description: >-
   calls. Use when the user wants to automate, script, or inspect a
   Chromium-based browser via CDP — single tab or multi-tab, attach to an
   existing browser or launch a new one with --remote-debugging-port.
-setup: bash <skill-dir>/scripts/setup
+setup: bash /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/scripts/setup
 compatibility: >-
   Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and a Chromium-based browser with remote debugging (chrome://inspect or --remote-debugging-port).
 ---
@@ -18,7 +18,7 @@ compatibility: >-
 
 Custom codegen'd CDP SDK (every method from browser_protocol.json + js_protocol.json gets a typed wrapper) plus a tiny HTTP server that holds one persistent CDP `Session`. The `browser-harness-js` CLI auto-starts the server on first use and forwards JS snippets to it.
 
-The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `<skill-dir>` refers to wherever `npx skills add` installed the skill (Claude Code: `~/.claude/skills/cdp`; Cursor: `~/.cursor/skills/cdp`; other agents vary). The CLI should be on PATH as `browser-harness-js`.
+The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp` refers to wherever `npx skills add` installed the skill (Claude Code: `~/.claude/skills/cdp`; Cursor: `~/.cursor/skills/cdp`; other agents vary). The CLI should be on PATH as `browser-harness-js`.
 
 ## How to use
 
@@ -85,8 +85,13 @@ These globals are pre-loaded — no imports needed:
 - `detectBrowsers()` — scan OS-specific profile dirs for running Chromium-based browsers with remote debugging on. Returns `[{name, profileDir, port, wsPath, wsUrl, mtimeMs}]`, sorted by most recently launched.
 - `resolveWsUrl(opts)` — resolve a WS URL from `{wsUrl}` | `{port, host?}` | `{profileDir}`. For the no-args auto-detect flow, call `session.connect()` directly instead.
 - `CDP` — the generated namespaces (`CDP.Page`, `CDP.Runtime`, …) for type-name reference.
-- `axView(nodes, opts?)` — compressed accessibility-tree view: a pure projection over a raw `Accessibility.getFullAXTree`/`queryAXTree` result. Drops ~96% structural noise, assigns `[n]` refs → `backendDOMNodeId`. Options: `{ interactive, refs, maxDepth, redactSensitive }`. See `interaction-skills/snapshot.md`.
-- `axDiff(prev, next)` / `parseAxRefs(view)` / `axClick(ref, refs)` / `axType(ref, refs, text)` — multi-step snapshot helpers (diff, ref map, click/type by ref). See `interaction-skills/snapshot.md`.
+- `axView(nodes, opts?)` — compressed accessibility-tree view: a pure projection over a raw `Accessibility.getFullAXTree`/`queryAXTree` result. Drops ~96% structural noise, assigns `[n]` refs → `backendDOMNodeId`. Options: `{ interactive, refs, maxDepth, redactSensitive, locators }` (`locators: true` emits a stable `loc=role:R["N"]` per ref usable across re-snapshots — see `interaction-skills/snapshot.md`).
+- `axDiff(prev, next)` / `parseAxRefs(view)` / `axClick(ref, refs?)` / `axType(ref, refs, text)` — multi-step snapshot helpers (diff, ref map, click/type by ref). See `interaction-skills/snapshot.md`.
+- `parseAxLocators(view)` / `resolveLocator(loc)` / `isLocatorString(s)` — locator helpers. `axClick` accepts a locator string in its first arg `axClick('role:button["Submit"]')` and resolves it; `resolveLocator` returns the `backendDOMNodeId` (tries `queryAXTree` then falls back to a full-tree scan when the served Chromium hangs the former). Locators survive refMap rebuilds; `[n]` refs do not.
+- `attachSignals()` / `drainSignals()` / `detachSignals()` — drainable async event queue. `drainSignals()` returns + clears a compact digest of dialogs / downloads / navigations / crashes (auto-attaches on first call; call `attachSignals()` BEFORE an action whose events you want to capture). See `interaction-skills/agent-signals.md`.
+- `pageInfo({ timeoutMs? })` — `{ url, title, w, h, sx, sy, pw, ph }` via a timed `Runtime.evaluate`; returns `{ dialog }` when a native modal blocks page JS, or `{ unresponsive }` if the eval hung with no dialog.
+- `help(name?)` — usage string for a helper; pass no name for the list.
+- `listLearnings()` / `learnings(domain, tool?, args?)` — per-site recipe registry over `skills/cdp/learnings/<domain>/manifest.json` (`nodeTools` and `browserTools` declared per manifest). See `learnings/README.md`.
 - `cdp(sessionId, method, params)` — call any CDP method on an **explicit** `sessionId` without touching the active-session pointer: `cdp(sid, 'Page.enable', {})`. The multi-tab primitive: the one-tab-per-call skills route every call this way so concurrent tabs never race `session.use`. Equivalent to `session._call(method, params, { sessionId })`.
 - `session.closeTab(targetId, sessionId?)` — close a tab and detach: `window.close()` on the session, then `Target.closeTarget`. Fire-and-forget in a `finally` (`.catch(() => {})`) so cleanup is guaranteed and never blocks the return. Closes are serialized.
 - `startRecording(name?, title?)` / `stopRecording()` / `recordingStatus()` — consent-based local screenshots and action traces for explanatory videos. Snake-case `start_recording` / `stop_recording` aliases are also available. See `interaction-skills/make-video.md`.
@@ -102,7 +107,7 @@ await stopRecording()
 return recordingDir
 ```
 
-Recording observes successful raw CDP calls, so it preserves the protocol API instead of replacing it with click/navigation helpers. Use `Input.*` for visible interactions: arbitrary `Runtime.evaluate` expressions such as `element.click()` cannot be classified as action beats. Password text is masked during capture; other typing remains hidden from video compositions unless explicitly reviewed and enabled. Never reenact a completed task to manufacture missing footage. Follow [`make-video.md`](interaction-skills/make-video.md) for consent, edit briefs, full-resolution privacy review, provenance hashes, and verified MP4 export.
+Recording observes successful raw CDP calls, so it preserves the protocol API instead of replacing it with click/navigation helpers. Use `Input.*` for visible interactions: arbitrary `Runtime.evaluate` expressions such as `element.click()` cannot be classified as action beats. Password text is masked during capture; other typing remains hidden from video compositions unless explicitly reviewed and enabled. Never reenact a completed task to manufacture missing footage. Video review and export must run in a fresh detached Chromium profile, never in the user's interactive browser. Follow [`make-video.md`](interaction-skills/make-video.md) for consent, edit briefs, isolated rendering, full-resolution privacy review, provenance hashes, and verified MP4 export.
 
 ### Calling a CDP method
 
@@ -131,8 +136,8 @@ const { nodeId } = await session.DOM.querySelector({ nodeId: root.nodeId, select
 Start here for the patterns every skill shares: [`lifecycle-readiness.md`](interaction-skills/lifecycle-readiness.md) (navigate + wait for load, the one-tab-per-call shape), [`json-navigation.md`](interaction-skills/json-navigation.md) (read a JSON URL), [`media-capture.md`](interaction-skills/media-capture.md) (record `MediaSource` / hook a native API before navigate), [`make-video.md`](interaction-skills/make-video.md) (turn consented action evidence into a short explanatory video).
 
 ```bash
-ls <skill-dir>/interaction-skills/
-grep -l <keyword> <skill-dir>/interaction-skills/*.md
+ls /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/interaction-skills/
+grep -l <keyword> /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/interaction-skills/*.md
 ```
 
 Each recipe leads with the shortest CDP call that works, then the trap — in `session.Domain.method(...)` form, no wrapped helpers — so it drops straight into a snippet. If the mechanic you need isn't there, that's a gap worth filing as a new recipe.
@@ -166,7 +171,7 @@ Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) f
 await session.connect()   // auto-detect: browser + port + host (loopback)
 ```
 
-Auto-detect scans OS-specific browser-data dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Aside, and any other Chromium fork) by looking for a `DevToolsActivePort` file. Each browser picks its own debug port (Chrome often 9222, but Aside uses an ephemeral one like 52860, etc.) — auto-detect reads the actual port from that file instead of assuming 9222. The host is always loopback (`127.0.0.1`) for a locally-running browser. Candidates are ordered by most-recently-launched, and the first one whose WebSocket accepts wins. OS-agnostic — works on macOS, Linux, Windows.
+Auto-detect scans OS-specific browser-data dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside, and any other Chromium fork) by looking for a `DevToolsActivePort` file. Each browser picks its own debug port (Chrome often 9222, but Aside uses an ephemeral one like 52860, etc.) — auto-detect reads the actual port from that file instead of assuming 9222. The host is always loopback (`127.0.0.1`) for a locally-running browser. Candidates are ordered by most-recently-launched, and the first one whose WebSocket accepts wins. OS-agnostic — works on macOS, Linux, Windows.
 
 Use `detectBrowsers()` first if you want to see what's available (or let the user pick) before connecting:
 
@@ -190,9 +195,9 @@ await session.connect({ wsUrl: 'ws://127.0.0.1:9222/devtools/browser/<uuid>' })
 ```
 
 Profile paths by OS — use these with `{ profileDir }`:
-- macOS: `~/Library/Application Support/<Browser>` (e.g. `Dia/User Data`, `Google/Chrome`, `Comet`, `BraveSoftware/Brave-Browser`, `Arc/User Data`, `Aside`)
-- Linux: `~/.config/<browser>` (e.g. `dia`, `google-chrome`, `chromium`, `BraveSoftware/Brave-Browser`, `aside`)
-- Windows: `%LOCALAPPDATA%\<Browser>\User Data` (e.g. `Dia\User Data`, `Google\Chrome`, `Microsoft\Edge`, `BraveSoftware\Brave-Browser`, `Aside`)
+- macOS: `~/Library/Application Support/<Browser>` (e.g. `Dia/User Data`, `Google/Chrome`, `Comet`, `BraveSoftware/Brave-Browser`, `Arc/User Data`, `net.imput.helium`, `Aside`)
+- Linux: `~/.config/<browser>` (e.g. `dia`, `google-chrome`, `chromium`, `BraveSoftware/Brave-Browser`, `net.imput.helium`, `aside`)
+- Windows: `%LOCALAPPDATA%\<Browser>\User Data` (e.g. `Dia\User Data`, `Google\Chrome`, `Microsoft\Edge`, `BraveSoftware\Brave-Browser`, `imput\Helium\User Data`, `Aside`)
 
 Per-candidate WS-open timeout defaults to **5s** — live browsers answer with open/close within ~100ms, so 5s is already generous. The only case where 5s is too short is when the browser is showing the **Allow** popup and waiting for the user to click. If you expect that, pass `timeoutMs: 30000`:
 
@@ -266,7 +271,7 @@ When attaching to the user's already-running browser:
    # first running candidate, and reuses the active profile. No browser hardcoded.
    osascript \
      -e 'set inspectURL to "chrome://inspect/#remote-debugging"' \
-     -e 'set apps to {"Dia","Google Chrome","Chromium","Microsoft Edge","Brave Browser","Arc","Vivaldi","Opera","Comet","Aside","Google Chrome Canary"}' \
+     -e 'set apps to {"Dia","Google Chrome","Chromium","Microsoft Edge","Brave Browser","Arc","Vivaldi","Opera","Comet","Helium","Aside","Google Chrome Canary"}' \
      -e 'set target to ""' \
      -e 'tell application "System Events"' \
      -e 'set frontApp to name of first application process whose frontmost is true' \
@@ -302,10 +307,10 @@ When attaching to the user's already-running browser:
 
 ## Looking up a method
 
-The full typed surface is in `<skill-dir>/sdk/generated.ts` (~655 KB, only loaded if you read it). Each method has its CDP description as a JSDoc comment plus typed `*Params` / `*Return` interfaces in per-domain namespaces.
+The full typed surface is in `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/generated.ts` (~655 KB, only loaded if you read it). Each method has its CDP description as a JSDoc comment plus typed `*Params` / `*Return` interfaces in per-domain namespaces.
 
 ```bash
-grep -n "navigate" <skill-dir>/sdk/generated.ts | head
+grep -n "navigate" /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/generated.ts | head
 ```
 
 ## Regenerating the SDK
@@ -313,7 +318,7 @@ grep -n "navigate" <skill-dir>/sdk/generated.ts | head
 When the upstream protocol JSONs change, replace `sdk/browser_protocol.json` and/or `sdk/js_protocol.json` and re-run:
 
 ```bash
-cd <skill-dir>/sdk && node gen.ts
+cd /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk && node gen.ts
 browser-harness-js --restart   # pick up the new bindings
 ```
 
@@ -321,9 +326,9 @@ Reinstalling (`npx skills add`) updates the files on disk but not the long-lived
 
 ## Files
 
-All paths are relative to `<skill-dir>` (the install path — see top of this doc).
+All paths are relative to `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp` (the install path — see top of this doc).
 
-- `/usr/local/bin/browser-harness-js` → `<skill-dir>/sdk/browser-harness-js` (the CLI)
+- `/usr/local/bin/browser-harness-js` → `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/browser-harness-js` (the CLI)
 - `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
 - `sdk/axview.ts` — `axView` / `axDiff` / `parseAxRefs`: compressed accessibility-tree projection + helpers, injected as globals (see `interaction-skills/snapshot.md`)

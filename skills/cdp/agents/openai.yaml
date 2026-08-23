@@ -1,0 +1,5 @@
+interface:
+  display_name: "browser-harness-js"
+  short_description: "Drive any Chromium browser from JavaScript via CDP"
+  brand_color: "#000000"
+  default_prompt: "Use $browser-harness-js to drive my browser: connect, pick a tab, snapshot, act via CDP."

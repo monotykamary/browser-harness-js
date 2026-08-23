@@ -4,6 +4,19 @@ CDP fires dozens of events per action. Most are noise (`Network.requestWillBeSen
 
 This is a **pattern over `session.onEvent`**, not a helper. Set it up per task, tear it down when done.
 
+In practice the helpers do it for you — see `help("drainSignals")`:
+
+```js
+await attachSignals();                     // subscribe once; start buffering (idempotent)
+await session.Page.enable()
+// ... your action: dispatchMouseEvent, etc. ...
+await new Promise(r => setTimeout(r, 300))  // let queued events land
+const got = drainSignals()                  // returns string[]; clears the buffer
+// (optional) detachSignals() when the task ends
+```
+
+`attachSignals()` is idempotent and `drainSignals()` auto-attaches on first call — but events that fired BEFORE the first subscribe are missed, so call `attachSignals()` BEFORE an action whose events you want to capture. The manual pattern below still applies when you want to customize which events surface (edit `SIGNAL_HANDLERS` in `skills/cdp/sdk/helpers.ts`). The helpers also keep a private `_lastDialog` snapshot that `pageInfo()` reads when `Runtime.evaluate` times out on a blocking modal.
+
 ## The events worth surfacing
 
 | Event | Signal | Why it matters |

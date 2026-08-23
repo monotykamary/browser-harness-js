@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# rsearch — Reddit post search via the site's own /search.json through the
+# browser (CDP). Adapted from opencli's clis/reddit/search.js:
+# https://github.com/jackwener/opencli/blob/main/clis/reddit/search.js
+#
+#   rsearch "claude code"                                # up to 15 results, pretty
+#   rsearch "local llm" 5                               # 5 results
+#   rsearch --json "stable diffusion" 10                # raw JSON
+#   rsearch --subreddit programming "git tips"           # one subreddit only
+#   rsearch --sort top --time week "browser automation"  # sorted + time-boxed
+#
+# A background tab opens www.reddit.com, then a same-origin
+# fetch("/search.json?...", { credentials: "include" }) carries the browser's
+# reddit cookies (logged in or not), real UA, and referer — curl/server-side
+# fetches get bot-walled, this doesn't. No Reddit API key, no jq. Each call
+# opens its own tab — safe for parallel use.
+
+# Auto-fix: if browser-harness-js isn't on PATH, try to find and symlink it.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  _bhjs="$(cd "$(dirname "$0")/.." && pwd)/../cdp/sdk/browser-harness-js"
+  if [ -f "$_bhjs" ]; then
+    _bindir="$HOME/.local/bin"
+    mkdir -p "$_bindir"
+    ln -sf "$_bhjs" "$_bindir/browser-harness-js"
+    export PATH="$_bindir:$PATH"
+  else
+    echo "rsearch: browser-harness-js not found. Run: bash <skill-dir>/scripts/setup" >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: rsearch [--json] [--subreddit NAME] [--sort S] [--time T] <query> [count]
+
+  Search Reddit posts through your browser's reddit.com session.
+
+  <query>           search terms (required)
+  [count]           number of results, 1-100 (default 15; reddit may return fewer)
+  --json            raw JSON array instead of pretty text
+  --subreddit NAME  restrict to one subreddit (bare name, r/name, or /r/name)
+  --sort S          relevance (default) | hot | top | new | comments
+  --time T          all (default) | hour | day | week | month | year
+
+Examples:
+  rsearch "claude code"
+  rsearch --json "local llm" 5
+  rsearch --subreddit programming --sort top --time month "git tips"
+USAGE
+  exit 1
+}
+
+[ $# -lt 1 ] && usage
+
+json_output=false
+subreddit=""
+sort="relevance"
+time_range="all"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json_output=true; shift ;;
+    --subreddit)
+      [ $# -ge 2 ] || { echo "rsearch: --subreddit requires a name" >&2; exit 1; }
+      subreddit="$2"; shift 2 ;;
+    --sort)
+      [ $# -ge 2 ] || { echo "rsearch: --sort requires a value (relevance|hot|top|new|comments)" >&2; exit 1; }
+      sort="$2"; shift 2 ;;
+    --time)
+      [ $# -ge 2 ] || { echo "rsearch: --time requires a value (hour|day|week|month|year|all)" >&2; exit 1; }
+      time_range="$2"; shift 2 ;;
+    --) shift; break ;;
+    -*) echo "rsearch: unknown option $1" >&2; exit 1 ;;
+    *) break ;;
+  esac
+done
+
+case "$sort" in
+  relevance|hot|top|new|comments) ;;
+  *) echo "rsearch: --sort must be one of: relevance, hot, top, new, comments (got '$sort')" >&2; exit 1 ;;
+esac
+case "$time_range" in
+  hour|day|week|month|year|all) ;;
+  *) echo "rsearch: --time must be one of: hour, day, week, month, year, all (got '$time_range')" >&2; exit 1 ;;
+esac
+
+# Accept --subreddit as name, r/name, or /r/name; keep the bare name.
+subreddit="${subreddit#/}"
+subreddit="${subreddit#r/}"
+if [ -n "$subreddit" ]; then
+  case "$subreddit" in
+    *[!A-Za-z0-9_]*) echo "rsearch: --subreddit must be a bare subreddit name (letters, digits, underscores) — got '$subreddit'" >&2; exit 1 ;;
+  esac
+fi
+
+[ $# -lt 1 ] && usage
+query="$1"
+count="${2:-15}"
+case "$count" in ''|*[!0-9]*) echo "rsearch: count must be a positive integer" >&2; exit 1 ;; esac
+[ "$count" -lt 1 ] && count=1
+# Reddit caps limit at 100.
+[ "$count" -gt 100 ] && count=100
+
+# The inputs are injected below by placeholder substitution so the heredoc can
+# stay quoted (backticks, $, and regex backslashes in the in-page JS need no
+# bash escaping). The substitution itself is done in node: it JSON.stringifies
+# the raw values into safe JS literals and uses function-replacements, which
+# are immune to the `&` / `$` / `\` semantics that bash ${var//pat/repl} and
+# JS String.replace both apply to plain replacement strings — matters for
+# queries containing `&` or `$`.
+code=$(cat <<'RSEARCH_EOF'
+const QUERY = __RSEARCH_QUERY__
+const COUNT = __RSEARCH_COUNT__
+const SUB = __RSEARCH_SUB__
+const SORT = __RSEARCH_SORT__
+const TIME = __RSEARCH_TIME__
+const JSON_OUT = __RSEARCH_JSON__
+
+if (!session.isConnected()) {
+  try { await session.connect() } catch (e) { throw new Error("Cannot connect to browser: " + e.message) }
+}
+
+const t = await session.Target.createTarget({ url: "about:blank", background: true })
+const { sessionId } = await session.Target.attachToTarget({ targetId: t.targetId, flatten: true })
+
+try {
+  await cdp(sessionId, "Page.enable", {})
+  // Establish a reddit.com origin first so the search fetch below is
+  // same-origin and carries the browser's reddit cookies (logged in or not),
+  // real UA, and referer. Wait for the frameNavigated COMMIT, not
+  // networkIdle: reddit's SPA keeps polling, so the network quiet-window can
+  // take forever to open, and the fetch only needs the committed origin, not
+  // a fully-built page. The regex allows www/old/<locale>.reddit.com.
+  const committed = session.waitFor({
+    method: "Page.frameNavigated", sessionId,
+    predicate: (p) => p.frame && !p.frame.parentId && /^https:\/\/([^/]*\.)?reddit\.com\//.test(p.frame.url),
+    timeoutMs: 20_000
+  })
+  await cdp(sessionId, "Page.navigate", { url: "https://www.reddit.com/" })
+  await committed
+
+  // Give the document a moment to pass `loading` (execution context stable),
+  // then run the search fetch in-page. Non-fatal if it lags — the origin is
+  // already committed and fetch works regardless.
+  const s0 = Date.now()
+  while (Date.now() - s0 < 10_000) {
+    try {
+      const rs = await cdp(sessionId, "Runtime.evaluate", { expression: "document.readyState", returnByValue: true })
+      if (rs.result && rs.result.value && rs.result.value !== "loading") break
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, 100))
+  }
+
+  const basePath = SUB ? "/r/" + encodeURIComponent(SUB) + "/search.json" : "/search.json"
+  const qs = "q=" + encodeURIComponent(QUERY) + "&sort=" + SORT + "&t=" + TIME
+    + "&limit=" + COUNT + "&restrict_sr=" + (SUB ? "on" : "off") + "&raw_json=1"
+
+  // Same-origin search.json fetch + projection, adapted from opencli's
+  // clis/reddit/search.js (decodeHtml + extractRedditMedia). Runs inside the
+  // reddit.com page, so cookies/origin/referer are the browser's own.
+  const EXPR = `(async function(){
+    function decodeHtml(s) {
+      if (typeof s !== "string" || !s) return "";
+      return s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"').replace(/&#x27;/gi, "'").replace(/&#39;/g, "'");
+    }
+    function media(d) {
+      var hint = (d && d.post_hint) || "";
+      var dest = (d && d.url_overridden_by_dest) || "";
+      var img = d && d.preview && d.preview.images && d.preview.images[0];
+      var prev = decodeHtml((img && img.source && img.source.url) || "");
+      var gal = [];
+      var items = d && d.gallery_data && d.gallery_data.items;
+      var meta = d && d.media_metadata;
+      if (Array.isArray(items) && meta) {
+        for (var i = 0; i < items.length; i++) {
+          var m = items[i] && meta[items[i].media_id];
+          var u = m && m.s && m.s.u;
+          if (u) gal.push(decodeHtml(u));
+        }
+      }
+      return { post_hint: hint, url_overridden_by_dest: dest, preview_image_url: prev, gallery_urls: gal };
+    }
+    var url = ${JSON.stringify(basePath + "?" + qs)};
+    var res = null, text = "", d = null;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      res = await fetch(url, { credentials: "include" });
+      text = await res.text();
+      try { d = JSON.parse(text); } catch (e) { d = null; }
+      if (d && res.ok) break;
+      // Reddit 403s the very first search.json hit from a fresh cookie jar
+      // (anti-bot interstitial); the 403 response itself sets the cookies
+      // that make the retry pass, so back off briefly and retry.
+      if (attempt < 2) await new Promise(function(wait){ setTimeout(wait, 800 * (attempt + 1)); });
+    }
+    if (!res || !d) return JSON.stringify({ error: "non-JSON response (HTTP " + (res ? res.status : 0) + ") — likely a block or login wall: " + text.slice(0, 160) });
+    if (!res.ok) return JSON.stringify({ error: "HTTP " + res.status + ((d && d.message) ? ": " + d.message : "") });
+    var children = (d && d.data && d.data.children) || [];
+    return JSON.stringify({ rows: children.slice(0, ${COUNT}).map(function(c){
+      var cd = c.data || {};
+      var m = media(cd);
+      return {
+        id: cd.id || "",
+        title: cd.title || "",
+        subreddit: cd.subreddit_name_prefixed || "",
+        author: cd.author || "",
+        score: cd.score,
+        comments: cd.num_comments,
+        url: "https://www.reddit.com" + (cd.permalink || ""),
+        created_utc: cd.created_utc,
+        selftext: cd.selftext || "",
+        post_hint: m.post_hint,
+        url_overridden_by_dest: m.url_overridden_by_dest,
+        preview_image_url: m.preview_image_url,
+        gallery_urls: m.gallery_urls
+      };
+    }) });
+  })()`
+
+  // CDP calls have no built-in timeout — a page-side fetch that hangs would
+  // hang forever, so bound the eval with a node-side race.
+  const evalP = cdp(sessionId, "Runtime.evaluate", { expression: EXPR, awaitPromise: true, returnByValue: true })
+  const timeoutP = new Promise((_, rej) => setTimeout(() => rej(new Error("reddit fetch timed out after 20s")), 20_000))
+  const r = await Promise.race([evalP, timeoutP])
+  if (r.exceptionDetails) throw new Error("eval failed: " + ((r.exceptionDetails.exception && r.exceptionDetails.exception.description) || r.exceptionDetails.text))
+  const v = JSON.parse(r.result.value)
+  if (v.error) throw new Error("reddit search failed: " + v.error)
+
+  const rows = v.rows
+  if (JSON_OUT) return rows
+  if (!rows.length) return "No reddit results for: " + QUERY
+  return rows.map((row) => {
+    const date = row.created_utc ? new Date(row.created_utc * 1000).toISOString().slice(0, 10) : ""
+    const blurb = (row.selftext || "").replace(/\s+/g, " ").trim().slice(0, 200)
+    const link = row.post_hint === "self" || !row.url_overridden_by_dest ? row.url : row.url + "  ->  " + row.url_overridden_by_dest
+    return row.title +
+      "\n  " + row.subreddit + " · u/" + row.author + " · " + row.score + " points · " + row.comments + " comments" + (date ? " · " + date : "") +
+      "\n  " + link +
+      (blurb ? "\n  " + blurb : "")
+  }).join("\n\n")
+} finally {
+  // Fire-and-forget closeTab — guaranteed cleanup even on errors,
+  // without blocking the response.
+  session.closeTab(t.targetId, sessionId).catch(() => {})
+}
+RSEARCH_EOF
+)
+
+# Inject inputs: node reads the quoted heredoc from stdin and replaces the
+# placeholders. Raw values are JSON.stringified into safe JS literals;
+# function-replacements dodge & / $ pitfalls in the replacement text.
+final=$(node -e '
+let c=require("fs").readFileSync(0,"utf8");
+let query=process.argv[1], count=process.argv[2], sub=process.argv[3], sort=process.argv[4], time=process.argv[5], json=process.argv[6];
+c=c.replace(/__RSEARCH_QUERY__/g,()=>JSON.stringify(query))
+    .replace(/__RSEARCH_COUNT__/g,()=>String(count))
+    .replace(/__RSEARCH_SUB__/g,()=>JSON.stringify(sub))
+    .replace(/__RSEARCH_SORT__/g,()=>JSON.stringify(sort))
+    .replace(/__RSEARCH_TIME__/g,()=>JSON.stringify(time))
+    .replace(/__RSEARCH_JSON__/g,()=>json);
+process.stdout.write(c);
+' "$query" "$count" "$subreddit" "$sort" "$time_range" "$json_output" <<<"$code")
+
+printf '%s' "$final" | browser-harness-js
+printf '\n'

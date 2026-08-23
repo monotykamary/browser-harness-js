@@ -1,0 +1,33 @@
+{
+  "name": "browser-harness-js",
+  "description": "Typed CDP SDK + skills driving the user's own Chromium browser",
+  "owner": {
+    "name": "monotykamary",
+    "email": "tom81094@gmail.com"
+  },
+  "metadata": {
+    "description": "browser-harness-js — the thinnest possible bridge from the LLM to Chrome",
+    "version": "0.9.1"
+  },
+  "plugins": [
+    {
+      "name": "browser-harness-js",
+      "version": "0.9.1",
+      "description": "Drive any Chromium browser via CDP from JavaScript — 56 domains, 652 typed methods, plus recipe skills for search, finance, maps, downloads.",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/cdp",
+        "./skills/gsearch",
+        "./skills/gnews",
+        "./skills/xsearch",
+        "./skills/rsearch",
+        "./skills/findata",
+        "./skills/ytdl",
+        "./skills/ttdl",
+        "./skills/gmaps"
+      ],
+      "category": "development"
+    }
+  ]
+}

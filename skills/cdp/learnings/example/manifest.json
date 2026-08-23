@@ -1,0 +1,14 @@
+{
+  "id": "example",
+  "name": "Example domain",
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "getOutline": {
+      "description": "Return the H2 section headings of the currently-loaded page in document order (text trimmed, empties dropped).",
+      "path": "tools/get-outline.mjs",
+      "callable": "getOutline",
+      "args": { "max": {"type": "integer", "required": false, "description": "Cap the number of headings returned."} },
+      "returns": {"type": "array", "description": "Strings (H2 text content)."}
+    }
+  }
+}

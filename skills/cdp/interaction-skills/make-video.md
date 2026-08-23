@@ -59,6 +59,49 @@ rendering use Chromium itself. Review/export jobs are globally serialized and th
 canvas records at 1920×1080, 30 fps to bound GPU/encoder pressure. Do not run
 parallel exports or repeatedly retry one that destabilizes the user's browser.
 
+### Isolated rendering
+
+Review and export are rendering jobs, not ordinary browser interactions. **Always run them in a fresh detached Chromium profile; never attach rendering to the user's interactive Dia, Chrome, or other daily browser.** Sustained canvas capture and encoding can exhaust memory or crash the browser that owns the tab.
+
+Launch one disposable browser, use it for both review and export, then stop it:
+
+```bash
+ROOT=$(mktemp -d /tmp/browser-harness-video.XXXXXX)
+PROFILE="$ROOT/profile"
+mkdir -p "$PROFILE"
+
+# Set CHROME_BIN to the Chrome/Chromium executable for this machine.
+nohup "$CHROME_BIN" \
+  --headless=new \
+  --remote-debugging-port=0 \
+  --user-data-dir="$PROFILE" \
+  --no-first-run \
+  --disable-background-networking \
+  --disable-sync \
+  --disable-default-apps \
+  --disable-extensions \
+  about:blank >"$ROOT/chrome.log" 2>&1 &
+RENDER_PID=$!
+
+# Wait for "$PROFILE/DevToolsActivePort" before running either command.
+browser-harness-js video review <recording>
+browser-harness-js video export <recording> --reviewed
+
+kill "$RENDER_PID"
+```
+
+Do not rely on automatic browser detection for rendering. Check memory pressure before a long export, run only one review/export job at a time, and stop the disposable browser even after a failed command. If it dies, inspect `chrome.log` and the failed output before retrying; do not retry against the user's browser.
+
+### Production-cut checks
+
+- Watch transitions at real playback speed. A contact sheet proves coverage, not pacing; submissions and dense result states need a readable final hold.
+- Treat title-card copy as responsive UI. Long summaries and plan labels must wrap inside safe horizontal margins; inspect the intro at full 1920×1080, not only as a scaled contact-sheet thumbnail.
+- Inspect every full-resolution privacy frame after review. Automated detection is only a backstop.
+- Any brief, source-frame, composition, or renderer change invalidates the review seal. Run review again before `--reviewed` export.
+- Preserve earlier cuts. Export to a new versioned path, then inspect frames from the encoded MP4 at the intro, densest result, and final outcome.
+- Verify the delivered MP4 itself with `ffprobe`: decoder, 1920×1080 dimensions, duration near the composition, and a stable SHA-256 checksum.
+
+
 ## Editorial contract
 
 - Optimize for first-time comprehension. The raw trace remains the debugging

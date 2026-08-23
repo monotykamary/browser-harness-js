@@ -1,0 +1,33 @@
+{
+  "name": "browser-harness-js",
+  "version": "0.9.0",
+  "description": "Drive any Chromium-based browser via the DevTools Protocol from JavaScript.",
+  "author": {
+    "name": "monotykamary",
+    "url": "https://github.com/monotykamary"
+  },
+  "homepage": "https://github.com/monotykamary/browser-harness-js",
+  "repository": "https://github.com/monotykamary/browser-harness-js",
+  "license": "MIT",
+  "keywords": ["cdp", "browser-automation", "ai-agents", "devtools", "chromium"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "browser-harness-js",
+    "shortDescription": "Drive Chromium from JS via CDP",
+    "longDescription": "The thinnest possible bridge from the LLM to Chrome: one persistent WebSocket, 56 domains, 652 typed CDP wrappers, and a folder of pure-CDP interaction recipes. Drives the user's OWN Chromium browser — inherit-free login state, no bundled browser.",
+    "developerName": "monotykamary",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Browser automation",
+      "Typed CDP methods",
+      "Cross-tab parallel use",
+      "Consent-based recording + explanatory videos"
+    ],
+    "defaultPrompt": [
+      "Open a website and inspect the page via the accessibility tree.",
+      "Search the web and follow a result link.",
+      "Capture screenshots or document a web automation task."
+    ],
+    "brandColor": "#000000"
+  }
+}

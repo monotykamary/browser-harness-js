@@ -34,6 +34,14 @@ export type AxViewOptions = {
    * Default true. Names/labels stay visible; values become `[redacted]`.
    */
   redactSensitive?: boolean;
+  /**
+   * Emit a stable `loc=role:<role>["<accessibleName>"]` locator next to each ref
+   * in the `# refs -> backendDOMNodeId` map. Resolve with `parseAxLocators`, then
+   * act with `axClick(locator)`. Locators survive rebuilds — unlike `[n]` refs,
+   * which are only valid for the snapshot that produced them. Cost ~5 tokens per
+   * kept element; default off — opt in for multi-step loops whose refs may go stale.
+   */
+  locators?: boolean;
 };
 
 const LEAF = new Set([
@@ -163,6 +171,7 @@ export function axView(nodes: any[], opts: AxViewOptions = {}): string {
   const interactive = opts.interactive === true;
   const redactSensitive = opts.redactSensitive !== false;
   const maxDepth = opts.maxDepth;
+  const locators = opts.locators === true;
   const byId = new Map<string, any>();
   for (const n of nodes) if (!byId.has(n.nodeId)) byId.set(n.nodeId, n);
 
@@ -222,6 +231,7 @@ export function axView(nodes: any[], opts: AxViewOptions = {}): string {
 
   const ref = new Map<string, number>();
   const back = new Map<number, number>();
+  const locByRef = new Map<number, string>();
   let rn = 0;
 
   const flags = (n: any, r: string, nm: string): string => {
@@ -288,6 +298,7 @@ export function axView(nodes: any[], opts: AxViewOptions = {}): string {
         rn++;
         ref.set(n.nodeId, rn);
         back.set(rn, n.backendDOMNodeId);
+        if (locators) locByRef.set(rn, 'role:' + r + (nm ? '[' + JSON.stringify(nm) + ']' : ''));
       }
       rid = `[${ref.get(n.nodeId)}] `;
     }
@@ -302,10 +313,19 @@ export function axView(nodes: any[], opts: AxViewOptions = {}): string {
   emit(root, 0);
 
   if (opts.refs !== false) {
+    const entries = [...back.entries()].map(([r, b]) => {
+      const l = locators ? locByRef.get(r) : undefined;
+      return l ? `[${r}]=${b} loc=${l}` : `[${r}]=${b}`;
+    });
+    // Multi-line when locators carry names with spaces; parseAxRefs / parseAxLocators
+    // are regex matchAll over the tail, so they tolerate either layout.
+    const sep = locators ? '\n' : ' ';
+    out.push('', '# refs -> backendDOMNodeId', entries.join(sep));
+  } else if (locators) {
     out.push(
       '',
-      '# refs -> backendDOMNodeId',
-      [...back.entries()].map(([r, b]) => `[${r}]=${b}`).join(' '),
+      '# locators',
+      [...locByRef.entries()].map(([r, l]) => `[${r}] ${l}`).join('\n'),
     );
   }
   return out.join('\n');
@@ -323,6 +343,28 @@ export function parseAxRefs(view: string): Map<number, number> {
   const tail = view.slice(marker);
   for (const m of tail.matchAll(/\[(\d+)\]=(\d+)/g)) {
     map.set(Number(m[1]), Number(m[2]));
+  }
+  return map;
+}
+
+/**
+ * Parse the `loc=role:...` (or plain `role:...`) entries that axView emits when
+ * called with `{ locators: true }`. Returns Map<refNumber, locatorString> where
+ * locatorString looks like `role:button["Submit"]` (or `role:link` for unnamed
+ * nodes). Pass locatorString to `axClick(loc)` to act on the element across
+ * re-snapshots — it resolves via `Accessibility.queryAXTree` on the active session,
+ * so it survives the refMap rebuilds that invalidate `[n]` refs.
+ */
+export function parseAxLocators(view: string): Map<number, string> {
+  const map = new Map<number, string>();
+  if (!view) return map;
+  // Matches both forms axView emits:
+  //   [1]=12345 loc=role:link["Donate"]   (refs map with locators on)
+  //   [1] role:button["Submit"]           (# locators standalone section)
+  const re = /\[(\d+)\](?:=\d+)?\s*(?:loc=)?(role:[^\s\[\]"']+(?:\["(?:[^"\\]|\\.)*"\])?)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(view)) !== null) {
+    map.set(Number(m[1]), m[2]!);
   }
   return map;
 }

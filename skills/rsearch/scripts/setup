@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+skill_dir="$(dirname "$script_dir")"
+cli="$skill_dir/scripts/rsearch"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+target_dir="$HOME/.local/bin"
+
+if ! echo ":$PATH:" | grep -q ":$target_dir:"; then
+  mkdir -p "$target_dir"
+  profile=""
+  for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+    if [ -f "$f" ]; then
+      profile="$f"
+      break
+    fi
+  done
+  if [ -n "$profile" ] && ! grep -q '\.local/bin' "$profile"; then
+    printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile"
+    echo "Added $target_dir to PATH in $profile"
+  fi
+  export PATH="$target_dir:$PATH"
+fi
+
+mkdir -p "$target_dir"
+ln -sf "$cli" "$target_dir/rsearch"
+echo "Linked: $target_dir/rsearch"
+
+# rsearch depends on browser-harness-js — symlink it if not already on PATH.
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  bhjs="$skill_dir/../cdp/sdk/browser-harness-js"
+  if [ -f "$bhjs" ]; then
+    ln -sf "$bhjs" "$target_dir/browser-harness-js"
+    echo "Linked: $target_dir/browser-harness-js"
+  else
+    echo "Warning: browser-harness-js not found at $bhjs" >&2
+    echo "  Install the cdp skill or put browser-harness-js on PATH manually." >&2
+  fi
+fi

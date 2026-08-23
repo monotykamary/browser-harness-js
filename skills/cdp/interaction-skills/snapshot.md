@@ -26,6 +26,7 @@ axView(nodes, { interactive: true })   // actionable structure only — start he
 axView(nodes, { refs: false })         // omit trailing ref map when only reading
 axView(nodes, { maxDepth: 4 })         // cap emit depth
 axView(nodes, { redactSensitive: false }) // keep password-ish values (default: redact)
+axView(nodes, { locators: true })     // emit loc=role:R["N"] per ref — survive refMap rebuilds
 ```
 
 | Option | Default | Meaning |
@@ -34,6 +35,7 @@ axView(nodes, { redactSensitive: false }) // keep password-ish values (default: 
 | `interactive` | `false` | Keep interactive roles + landmarks only (drop bulk StaticText / named content) |
 | `maxDepth` | unlimited | Max emit depth from root |
 | `redactSensitive` | `true` | Password-ish / protected textbox values → `="[redacted]"` (labels stay) |
+| `locators` | `false` | Append a stable `loc=role:R["N"]` per ref so it survives snapshot rebuilds (the `[n]` ref map is one-snapshot only). Costs ~5 tokens per kept element; opt in for multi-step loops whose refs go stale. Resolve via `parseAxLocators(view)` → `axClick(loc)` / `resolveLocator(loc)`. |
 
 ## Reading escalation (default agent workflow)
 

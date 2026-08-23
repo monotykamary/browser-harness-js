@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Smoke test for the rsearch skill.
+# Verifies live reddit search: pretty text, JSON shape, subreddit restriction,
+# sort/time flags — plus the arg guards. Exits 77 if the browser is
+# unreachable, 0 if all checks pass, 1 otherwise.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+cli="$script_dir/rsearch"
+
+if [ ! -f "$cli" ]; then
+  echo "Error: $cli not found" >&2
+  exit 1
+fi
+
+if ! command -v browser-harness-js >/dev/null 2>&1; then
+  echo "skip: browser-harness-js not on PATH (run scripts/setup first)" >&2
+  exit 77
+fi
+
+# Run the project's own rsearch script, not whatever happens to be on PATH.
+run() { "$cli" "$@" 2>&1 || true; }
+
+# Skip cleanly if the browser isn't reachable. This also serves as the first
+# live search, so a successful probe is not wasted work.
+probe=$(run --json "reddit" 2)
+case "$probe" in
+  *Cannot*connect*|*ECONNREFUSED*|*connect:*|*WS*error*)
+    echo "skip: browser not reachable ($(printf '%s' "$probe" | head -1 | sed 's/^[[:space:]]*//'))" >&2
+    exit 77 ;;
+esac
+
+pass=0
+fail=0
+ok()  { echo "  PASS  $1"; pass=$((pass + 1)); }
+bad() { echo "  FAIL  $1"; printf '%s\n' "$2" | sed 's/^[[:space:]]*/        /' | head -6; fail=$((fail + 1)); }
+expect() { if printf '%s' "$3" | grep -qF "$2"; then ok "$1"; else bad "$1" "$3"; fi; }
+
+echo "rsearch smoke test (search: JSON + pretty + subreddit + sort/time)"
+
+# Live JSON search of an always-popular term.
+expect "json: rows carry reddit permalinks" '"url":"https://www.reddit.com/r/' "$probe"
+expect "json: rows carry prefixed subreddit names" '"subreddit":"r/' "$probe"
+expect "json: rows expose score and comments" '"score":' "$probe"
+
+# Pretty text: header line per row.
+pretty=$(run "python" 3)
+expect "pretty: shows the points/comments header" "points · " "$pretty"
+expect "pretty: shows permalinks" "https://www.reddit.com/r/" "$pretty"
+
+# Subreddit restriction: every row comes back from r/programming.
+sub=$(run --json --subreddit programming "python" 3)
+expect "subreddit: restrict_sr scopes rows to r/programming" '"subreddit":"r/programming"' "$sub"
+# Prefix forms normalize to the same bare name.
+sub2=$(run --json --subreddit r/programming "python" 1)
+expect "subreddit: r/ prefix form accepted" '"subreddit":"r/programming"' "$sub2"
+
+# Sort + time flags: top of all time still returns rows with the full shape.
+top=$(run --json --sort top --time all "reddit" 1)
+expect "sort/time: top of all time returns rows" '"title":"' "$top"
+
+echo "-- guards --"
+# No args -> usage, non-zero exit.
+g1=$("$cli" 2>&1); rc1=$?
+if [ "$rc1" -ne 0 ] && printf '%s' "$g1" | grep -qF "Usage"; then ok "guard: no args -> usage"; else bad "guard: no args -> usage" "rc=$rc1 out=$g1"; fi
+# Unknown option -> error, non-zero exit.
+g2=$("$cli" --bogus "x" 2>&1); rc2=$?
+if [ "$rc2" -ne 0 ] && printf '%s' "$g2" | grep -qF "unknown option"; then ok "guard: unknown option rejected"; else bad "guard: unknown option rejected" "rc=$rc2 out=$g2"; fi
+# Bad --sort -> error naming the valid set.
+g3=$("$cli" --sort bogus "x" 2>&1); rc3=$?
+if [ "$rc3" -ne 0 ] && printf '%s' "$g3" | grep -qF "relevance"; then ok "guard: bad --sort rejected"; else bad "guard: bad --sort rejected" "rc=$rc3 out=$g3"; fi
+# Bad --time -> error naming the valid set.
+g4=$("$cli" --time bogus "x" 2>&1); rc4=$?
+if [ "$rc4" -ne 0 ] && printf '%s' "$g4" | grep -qF "hour"; then ok "guard: bad --time rejected"; else bad "guard: bad --time rejected" "rc=$rc4 out=$g4"; fi
+# Bad --subreddit name -> error, non-zero exit.
+g5=$("$cli" --subreddit "foo/bar" "x" 2>&1); rc5=$?
+if [ "$rc5" -ne 0 ] && printf '%s' "$g5" | grep -qF "subreddit"; then ok "guard: bad --subreddit rejected"; else bad "guard: bad --subreddit rejected" "rc=$rc5 out=$g5"; fi
+# Non-numeric count -> error, non-zero exit.
+g6=$("$cli" "x" abc 2>&1); rc6=$?
+if [ "$rc6" -ne 0 ] && printf '%s' "$g6" | grep -qF "positive integer"; then ok "guard: non-numeric count rejected"; else bad "guard: non-numeric count rejected" "rc=$rc6 out=$g6"; fi
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]

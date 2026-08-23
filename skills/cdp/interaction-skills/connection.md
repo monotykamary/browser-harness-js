@@ -2,7 +2,7 @@
 
 ## Just call `session.connect()`
 
-No args required. It scans OS-specific browser-data dirs for every running Chromium-based browser (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Aside — and any other Chromium fork via a bounded fallback scan), reads each one's actual debug port from its `DevToolsActivePort` file, and picks the most-recently-launched one whose WebSocket accepts. No hardcoded port: Chrome often listens on 9222, but Aside and others use ephemeral ports (e.g. 52860), so auto-detect reads the real port instead of assuming. The host is always loopback (`127.0.0.1`) for a local browser. Dead ports and permission-denied (403) candidates fall through in <100ms each, so the loop is fast.
+No args required. It scans OS-specific browser-data dirs for every running Chromium-based browser (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside — and any other Chromium fork via a bounded fallback scan), reads each one's actual debug port from its `DevToolsActivePort` file, and picks the most-recently-launched one whose WebSocket accepts. No hardcoded port: Chrome often listens on 9222, but Aside and others use ephemeral ports (e.g. 52860), so auto-detect reads the real port instead of assuming. The host is always loopback (`127.0.0.1`) for a local browser. Dead ports and permission-denied (403) candidates fall through in <100ms each, so the loop is fast.
 
 ```js
 await session.connect()
@@ -92,7 +92,7 @@ The `<browser-app>`/`<browser-binary>` is the one `session.connect()` attached t
 ```bash
 # macOS — print the running Chromium app name (frontmost, else first running)
 osascript \
-  -e 'set apps to {"Dia","Google Chrome","Chromium","Microsoft Edge","Brave Browser","Arc","Vivaldi","Opera","Comet","Aside","Google Chrome Canary"}' \
+  -e 'set apps to {"Dia","Google Chrome","Chromium","Microsoft Edge","Brave Browser","Arc","Vivaldi","Opera","Comet","Helium","Aside","Google Chrome Canary"}' \
   -e 'tell application "System Events"' \
   -e 'set frontApp to name of first application process whose frontmost is true' \
   -e 'if frontApp is in apps then return frontApp' \

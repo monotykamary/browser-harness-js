@@ -738,14 +738,18 @@ export async function detectBrowsers(): Promise<DetectedBrowser[]> {
 type BrowserCandidate = { name: string; profileDir: string };
 
 /** OS-specific user-data dirs for Chromium-based browsers, in rough popularity order. */
-function getBrowserCandidates(): BrowserCandidate[] {
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+export function getBrowserCandidates(
+  home = process.env.HOME ?? process.env.USERPROFILE ?? '',
+  platform: NodeJS.Platform = process.platform,
+  localAppData = process.env.LOCALAPPDATA,
+): BrowserCandidate[] {
   const list: BrowserCandidate[] = [];
   const push = (name: string, profileDir: string) => list.push({ name, profileDir });
 
-  if (process.platform === 'darwin') {
+  if (platform === 'darwin') {
     const base = `${home}/Library/Application Support`;
     push('Dia',                    `${base}/Dia/User Data`);
+    push('Helium',                 `${base}/net.imput.helium`);
     push('Google Chrome',          `${base}/Google/Chrome`);
     push('Chromium',               `${base}/Chromium`);
     push('Microsoft Edge',         `${base}/Microsoft Edge`);
@@ -756,9 +760,10 @@ function getBrowserCandidates(): BrowserCandidate[] {
     push('Comet',                  `${base}/Comet`);
     push('Aside',                  `${base}/Aside`);
     push('Google Chrome Canary',   `${base}/Google/Chrome Canary`);
-  } else if (process.platform === 'linux') {
+  } else if (platform === 'linux') {
     const cfg = `${home}/.config`;
     push('Dia',                    `${cfg}/dia`);
+    push('Helium',                 `${cfg}/net.imput.helium`);
     push('Google Chrome',          `${cfg}/google-chrome`);
     push('Chromium',               `${cfg}/chromium`);
     push('Microsoft Edge',         `${cfg}/microsoft-edge`);
@@ -767,9 +772,10 @@ function getBrowserCandidates(): BrowserCandidate[] {
     push('Opera',                  `${cfg}/opera`);
     push('Aside',                  `${cfg}/aside`);
     push('Google Chrome Canary',   `${cfg}/google-chrome-unstable`);
-  } else if (process.platform === 'win32') {
-    const local = process.env.LOCALAPPDATA ?? `${home}\\AppData\\Local`;
+  } else if (platform === 'win32') {
+    const local = localAppData ?? `${home}\\AppData\\Local`;
     push('Dia',                    `${local}\\Dia\\User Data`);
+    push('Helium',                 `${local}\\imput\\Helium\\User Data`);
     push('Aside',                  `${local}\\Aside`);
     push('Google Chrome',          `${local}\\Google\\Chrome\\User Data`);
     push('Chromium',               `${local}\\Chromium\\User Data`);

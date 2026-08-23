@@ -1,3 +1,10 @@
 node_modules/
 /tmp/browser-harness-js.log
 .DS_Store
+
+# Re-include the project's own Claude Code plugin manifest; the global
+# ~/.gitignore_global rule ".claude*" hides .claude-plugin/ but this file
+# ships as repo content for cross-agent distribution. Re-include configmaps
+# for any future tools we add to .claude-plugin/ too.
+!.claude-plugin/
+!.claude-plugin/**
