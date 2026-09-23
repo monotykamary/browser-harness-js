@@ -20,6 +20,7 @@ import { asWire, extensionConnected, setExtensionClient } from './extension-hub.
 import { acceptExtensionUpgrade, isExtensionUpgrade } from './ws-server.ts';
 import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
 import { RecordingManager } from './recording.ts';
+import { InteractionController } from './interaction.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -35,6 +36,8 @@ const session = new Session();
 const recording = new RecordingManager(session);
 (globalThis as any).session = session;
 (globalThis as any).Session = Session;
+(globalThis as any).InteractionController = InteractionController;
+(globalThis as any).createInteractionController = (options: { allowedOrigins: string[] }) => new InteractionController(session, options);
 // Bind helpers to the singleton session so the agent calls `listPageTargets()`
 // with no args (no host/port confusion, no /json endpoint assumption).
 (globalThis as any).listPageTargets = () => listPageTargets(session);

@@ -1,0 +1,17 @@
+{
+  "name": "browser-harness-pi",
+  "version": "0.1.0",
+  "description": "Optional Pi extension owning the guarded Browser Harness Fabric component",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./extension.ts"] },
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node --test tests/*.test.ts" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*",
+    "pi-fabric": "*"
+  },
+  "peerDependenciesMeta": { "pi-fabric": { "optional": true } },
+  "devDependencies": { "typebox": "^1.0.0" }
+}

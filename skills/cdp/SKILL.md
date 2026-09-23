@@ -76,6 +76,139 @@ EOF
 
 Env vars: `CDP_REPL_PORT` (default `9876`; the extension worker hardcodes 9876 — keep them in sync), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`), `CDP_RECORD` (`1`/`0` preference override), `CDP_RECORDINGS_DIR` (storage override), `BROWSER_HARNESS_JS_HOME` (state root, default `~/.browser-harness-js`).
 
+## Guarded interaction at unknown UI boundaries
+
+Prefer the exact deterministic API/CDP route when known. At an **unknown UI decision
+boundary**, default to guarded **observe → act → verify**. Raw CDP, AX and vision
+helpers remain intentional escape hatches for unsupported mechanics, never a way
+to bypass a denial or required approval. The controller is model-neutral; Jev is
+optional, and model confidence is **not** permission.
+
+`InteractionController` is importable from `sdk/interaction.ts`. REPL globals:
+`InteractionController` and `createInteractionController({allowedOrigins})` (uses
+the persistent transport, **never** its mutable active-target pointer).
+
+```bash
+browser-harness-js <<'EOF'
+// session must already be connected to the authorized browser.
+// Choose the target from an authorized tab listing, not tab-strip position.
+const { sessionId } = await session.Target.attachToTarget({ targetId: globalThis.authorizedTargetId, flatten: true });
+globalThis.guard = createInteractionController({ allowedOrigins: ['https://example.com'] });
+globalThis.guardScope = { sessionId };
+globalThis.seen = await guard.observe({ scope: guardScope, maxElements: 64 });
+return seen;
+EOF
+```
+
+Choose only an offered candidate/operation consistent with the user's authority;
+never choose the first candidate just because it exists. Then, in a later snippet:
+
+```js
+const receipt = await guard.act({
+  scope: guardScope, observationId: seen.observationId,
+  action: { targetId: chosenCandidateId, operation: 'click' }
+});
+// Only after an executed receipt, inspect the changed state (not proof of success):
+if (receipt.status !== 'executed') return receipt;
+return await guard.waitForChange({ scope: guardScope, revision: seen.revision, timeoutMs: 5000 });
+```
+
+- `observe({scope:{sessionId},maxElements?}, {signal?}?)` returns `{scope,
+  observationId,revision,candidates:[{id,role,label,operations,value?,checked?}],url,title,truncated,
+  truncation:{elements,scan,text}}`. Default 64 candidates, maximum 128; scan cap
+  4096 light-DOM elements. Labels/title/URL are bounded to 256/512/2048 characters.
+  IDs are opaque, observation-scoped handles, not backend node IDs or locators.
+- `act({scope,observationId,action:{targetId,operation,text?}}, {signal?}?)`
+  returns `{status,reason?}`. **One attempted action consumes the observation**;
+  observe again before any next attempt. New observations invalidate previous
+  handles in the same scope. Scope mutations are serialized across controllers
+  sharing a Session; separate aliases/attachments are not a global browser lock.
+- `click` is synthetic native DOM activation, not a trusted pointer sequence.
+  `type` **replaces the entire value**, using the native input/textarea setter and
+  one bubbling `input` event; no focus, key events, `change`, or automatic submit.
+  Maximum literal text length **4096** (host and page). Ordinary text/search inputs
+  and textarea expose their bounded `value`; checkbox/radio expose `checked`.
+  Password, sensitive autocomplete and marked-private controls are excluded, as
+  are conservative sensitive name/id/label/title/placeholder matches (e.g. token,
+  PIN, payment, account, email/address). These heuristics can overexclude and are
+  not general DLP: ordinary page text, URL/title and unrecognized secrets may remain.
+  Oversized values/identities are omitted with `truncation.text`, never acted on
+  using a partial fingerprint. Exact fingerprints stay in-page (8192 characters
+  per target); only SHA-256 digests cross CDP (at most 8192 digest characters).
+  Hashing requires in-page SubtleCrypto, normally HTTPS or localhost; unavailable
+  crypto rejects observation rather than weakening identity checks.
+- `waitForChange({scope,revision,timeoutMs?}, {signal?}?)` returns
+  `{changed,observation}` with the same observation shape, including on timeout.
+  Default 5000 ms, range 0–60000. Samples at most every 500 ms plus snapshot cost;
+  it detects projected state, not arbitrary network/application success. Calls
+  can await browser responses beyond this interval; use `signal` for a deadline.
+- `invalidate(scope?)` expires one/all scopes; `close()` expires everything and
+  removes listeners, **without** closing the Session or browser. Close is
+  cooperative: queued callers cancel promptly, but already-dispatched effects
+  may finish later. The shared scope queue stays quarantined until outstanding
+  transport settles; late snapshot objects are released, and effects never replay.
+- Bounds: 32 retained scopes and 32 concurrent waits per controller; 32 active
+  queue scopes per Session and 32 pending operations per scope across controllers
+  (including in-flight/cancelled-but-unsettled work). Capacity rejects reads/waits
+  or returns `blocked` for actions. Invalidate unused scopes to free retained
+  observations. Stalled releases also backpressure observations; close does not
+  force-unlock unresolved transport calls.
+
+Receipts: `executed` = dispatched, **not goal achieved**; verify by fresh state or
+an authoritative read-back. `stale` → reobserve. `blocked` (especially
+`origin_denied`) → approval/stop, not raw-API evasion. `outcome_unknown` → inspect,
+**never blind retry**. Cancelling before dispatch prevents later effects;
+cancelling after dispatch returns unknown and cannot retract browser-side work.
+`observe`/`waitForChange` reject on denial, cancellation or unavailable context.
+
+Require **1–32** exact HTTP(S) `allowedOrigins`, each at most **2048** characters
+(length checked before deduplication), and a nonempty `scope.sessionId` of at most
+**256** characters. Empty origin lists reject construction. No paths,
+wildcards, credentials or implicit current-origin grant. Origin, document,
+connection generation, native node identity, semantics/value, enabled/visible
+state, center-point occlusion and unchanged geometry are rechecked before effects.
+Navigation, disconnect/reconnect, invalidation and replay expire handles.
+Reconnect retains the selected endpoint/transport/options; reattach after a
+connection change. Injected adapters should expose Session-compatible `onEvent`,
+`getConnectionGeneration` and the `expectedGeneration` dispatch fence for lifecycle
+invalidation; remote-object/document checks still apply to `_call`-only adapters.
+
+Initial scope is conservative: top-level light-DOM native buttons, links, check/radio
+inputs and simple text fields only; no frames, shadow trees, ARIA custom widgets,
+`aria-labelledby`, canvas, scrolling, rich editors or trusted-input guarantees.
+Unsupported/hidden/occluded controls are omitted. This is not a complete AX tree,
+a sandbox around raw CDP, a navigation/network firewall, or an atomic GUI transaction.
+The page/user may race effects and scripts may navigate after activation; every
+subsequent guarded call rechecks authority. Never infer success from a receipt.
+See [agent-operating-loop.md](interaction-skills/agent-operating-loop.md).
+
+## Optional Fabric browser provider
+
+When the optional harness-owned Pi extension is loaded (see the repository
+README's **Optional Pi / Fabric connector** section), `browser-harness` provides
+`browser` through Fabric's normal component protocol. It is not built into Fabric
+and needs no Jev/model. If the definition is unknown, request extension loading;
+configuration may remain `waiting` for `component:browser-harness` until then.
+Do not try to repair this with a browser connection or a Fabric-private import.
+
+Inspect `components.describe({component:"browser-harness"})`, then
+`components.plan({entries:[{id:"browser",component:"browser-harness",config}]})`.
+Inspect the plan and obtain any required approval before
+`components.apply({...plan.request,expectedRevision:plan.revision})`.
+Configuration requires trusted `modulePath` (SDK `session.ts`), explicit `wsUrl`
+and exact `allowedMethods`; guarded use additionally requires trusted
+`interactionModulePath` (SDK `interaction.ts`) and exact `allowedOrigins`.
+Paths resolve relative to invocation cwd; `callTimeoutMs` defaults to 10000
+(range 100–60000). No implicit endpoint, origin, prompt approval or grants.
+
+Registration/activation do not connect. Explicit `browser.connect` acquires the
+session with `autoAllow:false`. Separately grant `Target.attachToTarget` if needed
+to attach a known authorized target on that connection; use its returned
+`sessionId` for every guarded `scope`. `allowedMethods:[]` removes `browser.cdp`;
+raw grants, when present, are **not origin-limited** and invalidate observations.
+`browser.observe`, `browser.act`, `browser.waitForChange` use the guarded shapes
+and receipt rules above. Close is owned by the component's provider lifecycle.
+
 ## API surface inside snippets
 
 These globals are pre-loaded — no imports needed:
@@ -336,7 +469,8 @@ All paths are relative to `/Users/monotykamary/VCS/working-remote/open-source/br
 
 - `/usr/local/bin/browser-harness-js` → `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/browser-harness-js` (the CLI)
 - `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
-- `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
+- `sdk/session.ts` — `Session` class (transport, pinned reconnect, generation tracking, target routing, events)
+- `sdk/interaction.ts` — model-neutral `InteractionController`: guarded explicit-scope observe/act/wait
 - `sdk/axview.ts` — `axView` / `axDiff` / `parseAxRefs`: compressed accessibility-tree projection + helpers, injected as globals (see `interaction-skills/snapshot.md`)
 - `sdk/recording.ts` — consent preferences, pinned rrweb fetch/cache, injection, event storage, local replay server
 - `sdk/rrweb-replay.html` — local player UI served by `recordings replay`

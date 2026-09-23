@@ -2,14 +2,14 @@
 
 # Browser Harness JS ♞
 
-The thinnest possible bridge from the LLM to Chrome. **No harness, no recipes, no rails** — just every CDP method as a typed JS call.
+A model-neutral bridge from agents to Chrome: every CDP method as a typed JS call, plus an opt-in guarded interaction layer for unknown UI decisions.
 
 One persistent WebSocket, 56 domains, 652 typed wrappers, zero wrapping of what Chrome already does.
 
 ```
   ● agent: wants to click a button
   │
-  ● no click() helper, no upload_file(), no goto()
+  ● known deterministic route: use CDP directly
   │
   ● agent writes the CDP call itself        await session.Input.dispatchMouseEvent({...})
   │                                          await session.DOM.setFileInputFiles({...})
@@ -51,6 +51,117 @@ This needs **macOS Accessibility** for the `node` binary running the SDK. If it'
 
 See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes on the mechanics that are not obvious from the CDP method list alone.
 
+## Guarded interactions
+
+Prefer the exact deterministic API route when known. At unknown UI decision
+boundaries, default to **guarded observe → act → verify**. Import
+`InteractionController` from `skills/cdp/sdk/interaction.ts`, or use the REPL
+`createInteractionController({ allowedOrigins: ['https://example.com'] })`.
+Every `observe`, `act` and `waitForChange` requires `{scope:{sessionId}}`; no
+active-tab routing. See the [API and working snippet](skills/cdp/SKILL.md#guarded-interaction-at-unknown-ui-boundaries).
+
+Observations offer opaque, single-observation targets (64 default / 128 maximum),
+explicit truncation, safe control `value` (up to 4096 characters) and `checked`
+state. Sensitive controls are excluded using private markers, autocomplete and
+conservative naming heuristics; this is not general secret detection/DLP. Exact
+bounded identity fingerprints stay in-page; only SHA-256 digests cross CDP
+(requires in-page SubtleCrypto, normally HTTPS/localhost). Actions recheck origin, document/connection, native
+identity, semantics, visibility, enabled state, occlusion and geometry. Initial
+mechanics are synthetic native DOM click and replacement type, limited to
+main-frame light-DOM controls; no trusted-input, full AX, frame or editor promise.
+Typing replaces the entire value (maximum 4096 literal characters), then emits
+one synthetic bubbling/composed `input` event: no focus, keys, `change` or submit.
+
+`executed` means dispatched, not goal achieved. **stale → reobserve; blocked/denied
+→ approval or stop; outcome_unknown → inspect, never blindly retry.** Cancellation
+cannot undo a dispatched effect, and GUI actions are not atomic. `close()` is
+cooperative; unresolved dispatched calls retain the shared scope queue fence
+until settlement. Queues, concurrent waits and retained scopes are bounded, with
+explicit capacity failures rather than unbounded growth. Raw CDP/vision
+helpers remain intentional fallbacks for unsupported mechanics, not permission
+bypasses. Jev is optional; model confidence is never authorization.
+
+Origin allowlists require 1–32 exact origins (maximum 2048 characters each),
+and explicit scope session IDs are bounded to 256 characters. Allowlists are
+enforced on every guarded observation
+and action, including after navigation. They are not a network/navigation firewall
+or a sandbox around raw APIs. Session reconnect preserves its authorized settings
+and selected transport rather than rediscovering a different browser, increments
+a connection generation, and requires scoped callers to reattach.
+
+After updating the SDK, the long-lived daemon needs a user-authorized restart to
+load version **0.14.0** and the new globals. File updates alone do not reload it.
+
+## Optional Pi / Fabric connector
+
+The normal Pi extension package in [`pi/`](pi/) owns the `browser-harness`
+component and its guarded UI contract. Fabric stays connector-agnostic; it does
+not need a browser-specific loader, core registration or Jev/model integration.
+With Pi and Fabric available, optionally load it for one invocation or install
+it as a local package (commands shown from a sibling checkout):
+
+```bash
+pi -e ../browser-harness-js/pi/extension.ts
+# Or, persist the normal Pi package registration:
+pi install ../browser-harness-js/pi
+```
+
+Pi supplies the `typebox` runtime peer and Pi types. `pi-fabric/protocol` is an
+optional, **type-only** peer: no Fabric implementation is imported at runtime.
+Loading the extension only registers a definition, in either extension load
+order. Configuring it loads the adapter but no SDK modules, processes or sockets.
+Only explicit `browser.connect` loads Session and connects to the configured
+WebSocket (`autoAllow: false`); the interaction module loads on first guarded use.
+Provider close releases its controller and session. This does not use the REPL
+daemon or discover/approve a personal browser.
+
+Use Fabric's existing component control plane (in `fabric_exec`):
+
+```ts
+const definition = await components.describe({ component: "browser-harness" });
+const plan = await components.plan({ entries: [{
+  id: "browser", component: definition.name,
+  config: {
+    modulePath: "/trusted/browser-harness-js/skills/cdp/sdk/session.ts",
+    interactionModulePath: "/trusted/browser-harness-js/skills/cdp/sdk/interaction.ts",
+    wsUrl: "ws://127.0.0.1:9222/devtools/browser/REPLACE_WITH_AUTHORIZED_ENDPOINT",
+    allowedOrigins: ["https://example.com"],
+    allowedMethods: ["Target.attachToTarget"]
+  }
+}] });
+return plan; // Inspect changes/warnings and obtain approval before applying.
+// Later, apply the inspected plan using its original request and revision:
+// await components.apply({ ...plan.request, expectedRevision: plan.revision });
+```
+
+Paths are explicit trusted SDK modules (absolute, or relative to invocation cwd),
+not tied to any sibling layout or bundled inside `pi/`. Required configuration:
+`modulePath`, `wsUrl`, `allowedMethods`. Guarded actions also require
+`interactionModulePath` plus 1–32 exact `allowedOrigins`; optional
+`callTimeoutMs` is 100–60000 (default 10000). `allowedMethods: []` disables raw CDP;
+provide an already-authorized session on this connection, or separately grant
+`Target.attachToTarget` to attach a known authorized target. Raw grants are exact
+method names and **not origin-limited**. No wildcard or implicit origin grants.
+
+Then explicitly call `browser.connect` and use `browser.observe`, `browser.act`
+and `browser.waitForChange` with `{scope:{sessionId}}`. `browser.cdp` exists only
+with raw grants; page-scoped raw calls also require `sessionId`. Receipts and
+cancellation retain the guarded semantics above: unknown outcomes never imply
+rollback or permission to retry. Normal Fabric tool/approval policy still applies.
+
+Before the extension is loaded, the definition is unknown to `components.describe`;
+configured entries stay `waiting` with `component:browser-harness` missing until
+the package is installed **and loaded**. Installing/configuring is not connecting.
+
+Focused offline package tests, from this repository (Node 24+, no SDK suite,
+browser, model or credentials):
+
+```bash
+cd pi
+bun install --ignore-scripts --omit peer  # standalone tests need only dev typebox
+node --test tests/*.test.ts
+```
+
 ## Session recording (rrweb)
 
 Recording is off by default. With explicit consent, the SDK injects [rrweb](https://github.com/rrweb-io/rrweb) into page targets and writes a local event log. Replay is the rrweb Replayer — a fidelity tape of DOM mutations, not a screenshot-compiled explainer.
@@ -82,11 +193,14 @@ This repo contains nine skills installable via `npx skills add`:
 
 ## Files
 
+- `pi/` — optional Pi extension package: lazy `browser-harness` Fabric definition, guarded browser provider, provider-owned UI contract and focused fake-session tests
 - `skills/cdp/SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
 - `skills/cdp/sdk/browser-harness-js` — tiny CLI that auto-spawns the server and forwards snippets
 - `skills/cdp/sdk/repl.ts` — Node HTTP server holding one persistent `Session`
 - `skills/cdp/extension/` — MV3 CDP relay (`chrome.debugger`); preferred `session.connect()` pipe
-- `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events, call observation
+- `skills/cdp/sdk/session.ts` — the `Session` class: transport, pinned reconnect, generation, target routing, events, call observation
+- `skills/cdp/sdk/interaction.ts` — model-neutral `InteractionController`, explicit-scope guarded observation/action/wait
+- `skills/cdp/sdk/interaction.test.ts` — injected session/DOM guard fixtures (no live browser)
 - `skills/cdp/sdk/extension-hub.ts` / `ws-server.ts` — inbound `/extension` WebSocket and connect() preference
 - `skills/cdp/sdk/chrome.ts` — `ext.*` helpers for Chrome tab/window/group commands (extension transport)
 - `skills/cdp/sdk/recording.ts` — consent, pinned rrweb fetch/cache, injection, local replay server
@@ -113,7 +227,7 @@ This repo contains nine skills installable via `npx skills add`:
 - `skills/gmaps/SKILL.md` — Google Maps skill instructions (search, directions, optimize)
 - `skills/gmaps/scripts/gmaps` — Google Maps CLI: search + `--route` directions (`--mode` …) + `--optimize` best-effort TSP (a `browser-harness-js` heredoc, no runtime)
 
-No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
+Raw protocol calls remain available alongside optional guarded interactions and focused helper recipes.
 
 ## Distribution: cross-agent plugin manifests
 
@@ -125,15 +239,18 @@ Beyond `npx skills add https://github.com/monotykamary/browser-harness-js`, this
 
 Each entry lists the same skills as `./skills/<name>`; the per-skill `scripts/setup` still handles PATH symlinking (`browser-harness-js` CLI + each skill's own script).
 
-## Why no pre-baked helpers?
+## Why preserve raw CDP?
 
-Every helper is a lie about what CDP already gives you. `click(x, y)` hides `Input.dispatchMouseEvent` — which has 14 parameters the LLM might need (button, clickCount, modifiers, pointerType, force, tangentialPressure, …). A harness that exposes three of them quietly limits what the agent can do.
+A guarded `click` deliberately supports less than `Input.dispatchMouseEvent`,
+which has parameters for button, clickCount, modifiers, pointerType, force and
+more. Use the guard at unknown UI decision boundaries; use authorized raw CDP
+when a deterministic route is known or unsupported mechanics require it.
 
 - Types are the docs. `session.Page.navigate(` triggers autocomplete with the exact params — same JSDoc as the CDP reference.
 - No version drift. The SDK is regenerated from the upstream protocol JSON; new Chrome methods appear as soon as you swap the JSON.
 - No "helper doesn't handle my case" detours. If CDP can do it, the agent can call it — directly, typed, today.
 
-The only "helpers" you'll find are things CDP itself is missing:
+Alongside `InteractionController`, focused helpers include:
 - `listPageTargets()` — filters `chrome://` / `devtools://` out of `Target.getTargets`
 - `resolveWsUrl({wsUrl|port|profileDir})` — reads `DevToolsActivePort` for Chrome 144+
 - `session.use(targetId)` / `session.waitFor(method, pred, timeout)` — the two routing primitives you genuinely need
@@ -144,7 +261,8 @@ The only "helpers" you'll find are things CDP itself is missing:
 - `help(name?)` — per-helper usage so the model does not need to reload docs to remember an option name
 - `listLearnings()` / `learnings(domain, tool?, args?)` — recipe registry over `skills/cdp/learnings/` so per-site selector chains are not re-derived each call (see `skills/cdp/learnings/README.md`)
 
-None wrap or hide a `session.Domain.method(...)` call; the agent can always drop to raw CDP for everything these helpers cover.
+These optional layers do not remove the raw `session.Domain.method(...)` surface.
+Raw access is an intentional escape hatch, never permission to evade a guard denial.
 
 ## Contributing
 

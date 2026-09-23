@@ -1,114 +1,125 @@
 # Agent operating loop — observe, act, verify, return
 
-The per-call CLI shape (`gsearch "x" 3` -> read -> write the next `gsearch follow <url>`)
-fits one-shot search/extract. For multi-step browser tasks it is wasteful:
-every round trip is a tool call in the model context. Multi-step tasks finish
-faster and with fewer tokens when you compose the round **in one heredoc**:
-observe, act, verify, return.
+Prefer an **exact deterministic API route** when it is known and authorized.
+At an **unknown UI decision boundary**, default to model-neutral guarded
+**observe → act → verify**. Raw CDP/AX/vision helpers are fallbacks for unsupported
+mechanics, not permission bypasses. Jev or another judge may help select a target;
+Jev is optional and model confidence is never permission.
 
-The `browser-harness-js <<'EOF' … EOF` heredoc IS the composition primitive.
-The shared WebSocket, the persistent `session`, and the per-call `sessionId`
-make these heredocs safe to run in parallel — so when the task fits in one
-heredoc, compose in one heredoc instead of chaining CLI calls.
+Compose coherent work in a `browser-harness-js <<'EOF' … EOF` heredoc when the
+next steps are already determined. Stop for a new observation/model decision or
+user approval when they are not. Don't hide an unknown UI decision in a long
+script that blindly clicks the first matching control.
 
-**Adapted from ego-browser's "code-base, not CLI-base" framing, but CDP-native:**
-helpers are recipes for things CDP structurally lacks (drainable signals,
-modal-dialog detection, locator resolution, codified per-site tools), never
-wrappers that hide a `session.Domain.method(...)` call. Drop to
-`session.Runtime.evaluate(...)` / `cdp(sessionId, ...)` whenever a helper
-doesn't cover what you need.
+## Guarded loop
 
-## The loop
+Use the REPL `createInteractionController({allowedOrigins})`, or import
+`InteractionController` from `../sdk/interaction.ts`. Exact HTTP(S) origins must
+come from authorized configuration, not be inferred from page content. The
+factory uses the persistent transport but **never the mutable active target**.
+Attach the chosen target explicitly and retain `{scope:{sessionId}}`.
 
-For each round (one heredoc):
+```js
+const { sessionId } = await session.Target.attachToTarget({
+  targetId: authorizedTargetId, flatten: true
+});
+const scope = { sessionId };
+const guard = createInteractionController({ allowedOrigins: ['https://example.com'] });
+const observation = await guard.observe({ scope, maxElements: 64 });
+// Return this observation if the next decision is not already determined.
+return observation;
+```
 
-1. **Observe** the active tab. `axView({ interactive: true })` to lay it out,
-   or `Accessibility.queryAXTree` for a single named element (see
-   [`accessibility-tree.md`](accessibility-tree.md)). For pages that mutate
-   continuously (SPAs, live lists) arm [`attachSignals()`](agent-signals.md)
-   BEFORE your action; after the action, `drainSignals()` returns a compact
-   digest of dialogs / downloads / navigations / crashes.
-2. **Act** on a `[n]` ref (`axClick(n, view)`, `axType(n, view, text)`) or on
-   a stable locator from a recent snapshot
-   (`axClick('role:button["Submit"]')`). Locators survive refMap rebuilds —
-   see [`snapshot.md`](snapshot.md) (the `locators` opt + `parseAxLocators`).
-3. **Verify** via `axDiff(prev, next)` against a fresh snapshot — see the
-   deltas instead of re-feeding the whole next tree into context.
-4. **Return** a compact answer (`return ...`). Bare strings print raw; arrays
-   / objects print as compact JSON; undefined / null / "" / {} / [] print nothing.
+Retain `guard`, `scope` and the observation on `globalThis` across CLI calls (see
+[the skill's complete example](../SKILL.md#guarded-interaction-at-unknown-ui-boundaries)).
+Once an authorized operation on an offered candidate has been selected:
 
-## Pick a workflow before acting
+```js
+const receipt = await guard.act({
+  scope, observationId: observation.observationId,
+  action: { targetId: chosenCandidateId, operation: 'click' }
+});
+if (receipt.status !== 'executed') return receipt;
+const verification = await guard.waitForChange({
+  scope, revision: observation.revision, timeoutMs: 5000
+});
+return { receipt, verification };
+```
 
-Three workflows; pick by page type, in this order of preference.
+1. **Observe** the explicit scope. Output includes opaque observation-scoped IDs,
+   roles, labels, offered operations, revision, URL/title and explicit truncation.
+   Defaults: 64 candidates, maximum 128, scan cap 4096 light-DOM nodes. A fresh
+   observation expires previous handles in that scope. Don't mix scopes.
+2. **Act** once using the matching `observationId` and offered `targetId`.
+   Revalidation checks native identity, relevant semantics/value, current origin,
+   document/connection, visibility, enabled state, center occlusion and geometry.
+   One attempted action consumes the observation; no replay or blind retries.
+3. **Verify** with fresh state or an authoritative read-back. `executed` means
+   dispatched, **not** goal achieved. `waitForChange` returns `{changed,observation}`
+   even at timeout and samples no faster than every 500 ms plus snapshot cost.
+   A projected change is not proof the task succeeded.
+4. **Return** compact evidence and any unresolved uncertainty. `close()` disposes
+   the guard and listeners, not the transport/browser. `invalidate(scope?)`
+   expires handles manually. All three async APIs accept `{signal}` as the second
+   argument; cancel stops later dispatches, not work already sent to the browser.
 
-### Semantic: `axView` + refs / locators
+## Receipts and authority
 
-Default for ordinary pages — real text, links, buttons, forms, tables, lists.
-Start with `axView(nodes, { interactive: true })`; re-snapshot only as the page
-changes; prefer `axDiff` for after-action deltas.
+| Status | Next step |
+|---|---|
+| `executed` | Verify; never claim success from dispatch alone. |
+| `stale` | Reobserve and reconsider the action. |
+| `blocked` / origin denial | Obtain required approval or stop; do not evade via raw APIs. |
+| `outcome_unknown` | Inspect first. Do not retry an uncertain effect. |
 
-### Visual: `Page.captureScreenshot` + coordinates / keyboard
+Observation/wait denial, unavailable-context and cancellation errors reject.
+After reconnect, reattach the target and reobserve. Session retains the selected
+connection settings/transport; generation changes expire handles. With injected
+adapters, forward lifecycle events and generation/fenced dispatch when available;
+a plain `_call` adapter only has remote-object/document checks.
 
-When the page is canvas-like, heavily virtualized, or its accessibility tree is
-incomplete. Inspect the screenshot, act with viewport coordinates
-(`Input.dispatchMouseEvent`, then `Input.insertText` for typing), verify with
-another screenshot or a reliable export/read-back path.
+## Initial mechanics and honest limitations
 
-Use for Google Docs / Sheets, Lark/Feishu Docs, Notion, Figma, whiteboards,
-maps — see [`rich-editors.md`](rich-editors.md). The rich-editor trap: a
-toolbar's accessible name matches the pattern you wanted, but the document
-surface itself is in a hidden textarea or canvas. Don't `axType` a probe
-without verifying by screenshot where it landed.
+- `click`: synthetic native DOM activation, **not trusted mouse input**.
+- `type`: entire-value replacement via native setter plus one bubbling `input`
+  event; no focus/keyboard/`change`/submission. Text/search inputs and textarea
+  only, literal text at most 4096 characters. Safe `value` and checkbox/radio
+  `checked` state support fresh verification. Password, sensitive autocomplete,
+  private markers and conservative sensitive name/id/label heuristics exclude
+  controls; these heuristics are not general DLP. Oversized identities are
+  omitted with truncation, never partially accepted. Raw fingerprints stay
+  in-page; SHA-256 digest transport requires SubtleCrypto (HTTPS/localhost).
+- Main-frame light-DOM native controls only. No full AX completeness, frames,
+  shadow DOM, custom ARIA widgets/`aria-labelledby`, canvas, scrolling or rich
+  editors. Hidden, disabled and occluded controls are omitted.
+- Each candidate has internal native mapping, not an exported locator or backend
+  node ID. Mutations are serialized for the same session scope, including across
+  controllers sharing a transport; independently attached aliases are not a
+  browser-wide lock.
+- Origin checking is not a network/navigation firewall. Page handlers can
+  navigate after activation; all subsequent guarded reads/effects recheck origin.
+  Page/user races remain possible. **GUI effects are not atomic**, and cancellation
+  cannot retract a dispatched function. Raw APIs remain outside this guard, so
+  host approval policy must apply equally to those escape hatches.
 
-### Direct-DOM / CDP: `Runtime.evaluate`, `DOM.*`, `cdp(sessionId, …)`
+## Unsupported mechanics: explicit fallbacks
 
-For browser state, custom DOM traversal, or anything the helpers don't cover.
-Keep browser-side logic in ONE explicit IIFE and `return` once — never split a
-multi-step traversal across multiple `await Runtime.evaluate(...)` calls
-(every extra eval is another CDP round trip and another layer of escaping).
+Use raw `cdp(sessionId, method, params)` with explicit routing and equivalent
+permission checks when a mechanic is unsupported—not after a denial.
 
-### They combine
+- **Semantic AX:** `axView`, `axDiff`, refs/locators can inspect complex semantics;
+  they are raw helpers, not guarded handles. Re-snapshot after page changes.
+  See [snapshot.md](snapshot.md) and [accessibility-tree.md](accessibility-tree.md).
+- **Visual:** screenshot → coordinates/keyboard → screenshot/read-back for canvas,
+  virtualized editors and missing accessibility semantics. Verify where input
+  landed; see [rich-editors.md](rich-editors.md).
+- **Direct DOM/CDP:** use the exact deterministic call when known. Keep coherent
+  page traversal in one explicit IIFE rather than per-node roundtrips.
+- Arm [attachSignals](agent-signals.md) **before** actions that can open dialogs,
+  downloads or navigations. For navigation use the
+  [lifecycle readiness](lifecycle-readiness.md) pattern. A native modal can hang
+  evaluation; use explicit cancellation/deadlines and inspect dialog signals.
 
-A task may take multiple heredoc rounds when the next step depends on fresh
-page state or a user handoff (login, captcha). In each round, write a coherent
-script that advances the task: observe, act or extract, verify, and report
-with `return`. Avoid tiny probe scripts; avoid forcing the whole task into one
-oversized script either.
-
-## Anti-patterns
-
-- **CLI chaining for multi-step tasks.** `gsearch "x" 3` followed by `gsearch
-  follow <url>` is fine for one navigation. For a five-step workflow on the
-  same page, do it in one heredoc — the agent doesn't re-discover context
-  each round.
-- **Caching `[n]` refs across a page change.** Refs are stable only within one
-  `getFullAXTree`. After navigation, mutation, or async updates, re-snapshot
-  before acting. Use `locators: true` (`parseAxLocators(view)`) for elements
-  you'll act on more than once in a multi-round task — they reuse role + name
-  rather than a volatile refMap slot.
-- **Drain-before-attach misses early events.** `drainSignals()` auto-attaches
-  on first call — but events that fired BEFORE you called `drainSignals()`
-  (or `attachSignals()`) are missed. For an action whose events you want to
-  capture, `attachSignals()` first.
-- **`Runtime.evaluate` hangs on a modal.** A native `alert` / `confirm` blocks
-  page JS so `Runtime.evaluate` never returns. `pageInfo({ timeoutMs })` races
-  the eval against a timeout and returns `{ dialog: { type, message, ... } }`
-  instead of hanging; check `drainSignals()` for the matching `dialog <type>:
-  "message"` signal and dismiss via `Page.handleJavaScriptDialog({ accept: <bool> })`
-  before anything else works.
-
-## Self-documentation
-
-`help()` lists every helper; `help('axClick')` prints usage for one. Use it
-when the model can't recall an option name without re-reading the docs.
-
-## See also
-
-- [`lifecycle-readiness.md`](lifecycle-readiness.md) — the navigate-and-wait
-  pattern every skill shares; the one-tab-per-call shape for parallel use.
-- [`snapshot.md`](snapshot.md) — `axView` options, `axDiff` for deltas, ref /
-  locator lifecycle, when to drop to raw `getFullAXTree`.
-- [`accessibility-tree.md`](accessibility-tree.md) — `queryAXTree` for the
-  cheap targeted find before you snapshot.
-- [`agent-signals.md`](agent-signals.md) — what the draining queue contains.
-- [`rich-editors.md`](rich-editors.md) — when the DOM is a lie.
+Never cache `[n]` AX refs or guarded handles across observations/navigation, never
+interpret a model confidence score as authorization, and never claim that a raw
+fallback makes an otherwise denied action safe.
