@@ -115,7 +115,7 @@ return await guard.waitForChange({ scope: guardScope, revision: seen.revision, t
 ```
 
 - `observe({scope:{sessionId},maxElements?}, {signal?}?)` returns `{scope,
-  observationId,revision,candidates:[{id,role,label,operations,value?,checked?,selected?,expanded?,options?}],
+  observationId,revision,candidates:[{id,role,label,operations,value?,checked?,selected?,expanded?,options?,context?}],
   url,title,truncated,truncation:{elements,scan,text}}`. Default 64 candidates, maximum 128; scan cap
   4096 light-DOM elements. Labels/title/URL are bounded to 256/512/2048 characters.
   IDs are opaque, observation-scoped handles, not backend node IDs or locators.
@@ -129,10 +129,27 @@ return await guard.waitForChange({ scope: guardScope, revision: seen.revision, t
   roles on any element: `button link checkbox radio switch tab menuitem
   menuitemcheckbox menuitemradio option treeitem combobox textbox searchbox`.
   Unknown roles are not guessed at. Names follow ARIA precedence:
-  `aria-labelledby` (up to 8 ids), `aria-label`, `<label>`, `title`, then
-  placeholder/text. States: `checked` (native or `aria-checked`), `selected`
-  (`aria-selected` on options/tabs), `expanded` (`aria-expanded`), `value`, and
-  `options` (a `<select>`'s first 64 option labels).
+  `aria-labelledby` (up to 8 ids), `aria-label`, `<label>`, then title/placeholder
+  for fields or name-from-content for clickable roles: descendants contribute
+  their own `aria-label`/`aria-labelledby`/`alt`, hidden subtrees contribute
+  nothing (bounded to 256 nodes), so a calendar day showing "20" is named
+  "Tuesday, October 20, 2026". States: `checked` (native or `aria-checked`),
+  `selected` (`aria-selected` on options/tabs), `expanded` (`aria-expanded`),
+  `value`, and `options` (a `<select>`'s first 64 option labels). `context` is the
+  nearest *named* dialog, grid, group, listbox, menu, form, region... around the
+  target (e.g. `dialog: Departure date`), which disambiguates repeated labels.
+- Controls inside open shadow roots are observed; hidden/inert/disabled ancestors,
+  hit tests and containment cross shadow boundaries.
+- A control is actionable at the first unobstructed point among nine samples
+  (center first), so partly covered controls work; trusted input clicks that
+  point. A `pointer-events: none` control (an accessibility overlay over its row)
+  counts as clear when the hit lands inside its own parent component; a foreign
+  overlay (e.g. a modal) still blocks.
+- Scrolling: when the page scrolls, a `page` candidate (last slot, labelled by
+  the title, `value` like `35% scrolled`) offers `scroll_down`/`scroll_up`;
+  visible scroll containers that are named or have a list/dialog/grid/region/menu/
+  tree/tabpanel/feed/log role are candidates too. Each scroll moves 80% of the
+  visible height; clipped or offscreen controls appear in the next observation.
 - Operations are offered per candidate; use only those listed:
   - `click`: synthetic DOM `click()` by default; a real mouse move/press/release
     at the freshly rechecked center with `input: 'trusted'`.
@@ -143,6 +160,7 @@ return await guard.waitForChange({ scope: guardScope, revision: seen.revision, t
     contenteditable textboxes (offered only in trusted mode).
   - `select` (`option`): sets a native `<select>` to `options[option]` and emits
     `input` and `change`.
+  - `scroll_down`/`scroll_up`: page and scroll-container candidates only.
   - `press` (`key`, trusted only): focuses the target, then sends one key from
     `Enter Escape Tab Backspace Delete ArrowUp ArrowDown ArrowLeft ArrowRight Home
     End PageUp PageDown Space`. Use it for autocomplete lists (type, ArrowDown,
@@ -201,9 +219,9 @@ connection change. Injected adapters should expose Session-compatible `onEvent`,
 `getConnectionGeneration` and the `expectedGeneration` dispatch fence for lifecycle
 invalidation; remote-object/document checks still apply to `_call`-only adapters.
 
-Scope is still bounded: main-frame light DOM only; no frames, shadow trees,
-canvas, scrolling, multi-selects, drag or file inputs. Controls must be visible
-in the viewport and unoccluded.
+Scope is still bounded: the main frame and its open shadow roots; no iframes,
+closed shadow roots, canvas, multi-selects, drag or file inputs. Controls must be
+visible in the viewport at some unobstructed point.
 Unsupported/hidden/occluded controls are omitted. This is not a complete AX tree,
 a sandbox around raw CDP, a navigation/network firewall, or an atomic GUI transaction.
 The page/user may race effects and scripts may navigate after activation; every

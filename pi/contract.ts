@@ -11,6 +11,7 @@ export interface HarnessCandidate {
   selected?: boolean;
   expanded?: boolean;
   options?: string[];
+  context?: string;
 }
 export interface HarnessObservation {
   scope: Record<string, string>;
@@ -51,6 +52,7 @@ const observationSchema = {
           value: { type: "string", maxLength: 4096 }, checked: { type: "boolean" },
           selected: { type: "boolean" }, expanded: { type: "boolean" },
           options: { type: "array", maxItems: 64, items: { type: "string", maxLength: 256 } },
+          context: { type: "string", maxLength: 256 },
         },
         required: ["id", "role", "label", "operations"],
       },
@@ -87,7 +89,7 @@ export function interactionDescriptors(provider: string, scopeSchema: Record<str
     },
     {
       name: "act", risk: "execute", effect,
-      description: `Revalidate and consume one observed target before dispatch. Use only an operation the candidate offers: click, type (text replaces the value), select (option indexes the candidate's options) or press (key; trusted input only). executed is not goal success. stale means re-observe; blocked means stop/approval; outcome_unknown means inspect, never blindly retry. ${grantNote}`.trim(),
+      description: `Revalidate and consume one observed target before dispatch. Use only an operation the candidate offers: click, type (text replaces the value), select (option indexes the candidate's options), press (key; trusted input only) or scroll_down/scroll_up (page and scroll-container candidates). executed is not goal success. stale means re-observe; blocked means stop/approval; outcome_unknown means inspect, never blindly retry. ${grantNote}`.trim(),
       inputSchema: schema({
         observationId: handle,
         action: {

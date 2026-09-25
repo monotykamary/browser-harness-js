@@ -74,8 +74,12 @@ Operations are `click`, `type` (replaces the entire value, maximum 4096
 characters), `select` (a native `<select>` option) and, with `input: 'trusted'`,
 `press` (an allowlisted key). Synthetic mode (the default) activates through the
 DOM; trusted mode sends real CDP mouse, text and key input at the rechecked target,
-which pointer-driven widgets and autocomplete comboboxes need. Scope remains
-main-frame light DOM: no frames, shadow trees, canvas or scrolling yet.
+which pointer-driven widgets and autocomplete comboboxes need. Names are computed
+from content (a day cell showing "20" is "Tuesday, October 20, 2026"), candidates
+carry the named `context` around them, open shadow roots are included, partly
+covered controls are used at a clear point, and the page and scroll containers
+offer `scroll_down`/`scroll_up`. Iframes, closed shadow roots and canvas remain out
+of scope.
 
 `executed` means dispatched, not goal achieved. **stale → reobserve; blocked/denied
 → approval or stop; outcome_unknown → inspect, never blindly retry.** Cancellation

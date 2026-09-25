@@ -1,6 +1,6 @@
 {
   "name": "browser-harness-pi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Optional Pi extension owning the guarded Browser Harness Fabric component",
   "type": "module",
   "keywords": ["pi-package"],

@@ -18,6 +18,8 @@ export type InteractionCandidate = {
   expanded?: boolean;
   /** Native <select> option labels; `select` takes an index into this list. */
   options?: string[];
+  /** Nearest named dialog, grid, group, list, form... around the target, e.g. "dialog: Departure". */
+  context?: string;
 };
 export type InteractionObservation = {
   scope: InteractionScope;
@@ -82,7 +84,7 @@ const MAX_ELEMENTS = 128;
 const DEFAULT_WAIT_MS = 5000;
 const MAX_WAIT_MS = 60000;
 const WAIT_INTERVAL_MS = 500;
-const OPERATIONS = ['click', 'type', 'select', 'press'];
+const OPERATIONS = ['click', 'type', 'select', 'press', 'scroll_down', 'scroll_up'];
 
 /** Keys `press` may send, with the CDP key event fields each needs. */
 export const PRESS_KEYS: Record<string, { code: string; keyCode: number; text?: string }> = {
@@ -560,8 +562,9 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 // Runs in a CDP isolated world: page-defined prototypes cannot replace these guards.
-// Bounded light-DOM controls with an explicit role allowlist. Not a complete
-// accessibility tree; trusted input is opt-in and dispatched by the host.
+// Bounded controls from the document and its open shadow roots, with an explicit role
+// allowlist, plus scrollable regions. Not a complete accessibility tree; trusted input
+// is opt-in and dispatched by the host.
 const projection = String.raw`async function(allowedOrigins, maxElements, trustedInput) {
   const doc = document;
   const url = location.href;
@@ -570,6 +573,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   const LIMITS = {
     label: 256, text: 2048, value: 4096, labels: 8, labelledBy: 8, options: 64, optionLabel: 256,
     attributes: 64, attributeName: 256, attributeValue: 1024, attributeTotal: 8192, fingerprint: 8192, scan: 4096,
+    contentNodes: 256, contentDepth: 8, shadowDepth: 8, contextDepth: 32, minScrollHeight: 40,
   };
   const CLICK_ROLES = ['button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'menuitem', 'menuitemcheckbox',
     'menuitemradio', 'option', 'treeitem'];
@@ -579,6 +583,59 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   const TEXT_INPUT_TYPES = ['text', 'search', 'url', 'number'];
   const IDENTITY_ATTRIBUTES = ['id', 'name', 'type', 'href', 'role', 'for', 'form', 'action'];
   const BUTTON_INPUT_TYPES = ['button', 'submit', 'reset', 'checkbox', 'radio'];
+  const GROUP_ROLES = ['dialog', 'alertdialog', 'grid', 'group', 'listbox', 'menu', 'menubar', 'tablist',
+    'radiogroup', 'region', 'form', 'toolbar', 'tree', 'rowgroup', 'table', 'navigation', 'search', 'list'];
+  const IMPLICIT_GROUPS = { DIALOG: 'dialog', FORM: 'form', NAV: 'navigation', TABLE: 'table', FIELDSET: 'group', SECTION: 'region' };
+  const SCROLL_ROLES = ['listbox', 'dialog', 'grid', 'region', 'list', 'menu', 'tree', 'tabpanel', 'feed', 'log', 'document'];
+
+  // Composed tree: parents cross open shadow roots, so hidden/inert/disabled ancestors,
+  // hit tests and containment hold inside web components too.
+  const shadowHost = node => {
+    const root = typeof node.getRootNode === 'function' ? node.getRootNode() : null;
+    return root && root !== doc && root.host ? root.host : null;
+  };
+  const composedParent = node => node.parentElement || shadowHost(node);
+  const closestComposed = (el, selector) => {
+    for (let node = el; node; node = shadowHost(node)) {
+      const found = node.closest(selector);
+      if (found) return found;
+    }
+    return null;
+  };
+  const composedContains = (el, node) => {
+    for (let current = node; current; current = composedParent(current)) {
+      if (current === el) return true;
+    }
+    return false;
+  };
+  const deepHit = (x, y) => {
+    let hit = doc.elementFromPoint(x, y);
+    while (hit && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  };
+  // The first sample point (center first) whose hit lands in scope; null if all are
+  // covered or offscreen. Trusted input clicks exactly this point.
+  const SAMPLE_POINTS = [[0.5, 0.5], [0.25, 0.5], [0.75, 0.5], [0.5, 0.25], [0.5, 0.75],
+    [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+  const clearPoint = (rect, scope) => {
+    for (const [fx, fy] of SAMPLE_POINTS) {
+      const x = rect.x + rect.width * fx;
+      const y = rect.y + rect.height * fy;
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+      const hit = deepHit(x, y);
+      if (hit && (hit === scope || scope.contains(hit) || composedContains(scope, hit))) return { x, y };
+    }
+    return null;
+  };
+  const byId = (el, id) => {
+    const root = typeof el.getRootNode === 'function' ? el.getRootNode() : doc;
+    return (root && root.getElementById ? root.getElementById(id) : null) ||
+      (doc.getElementById ? doc.getElementById(id) : null);
+  };
 
   const refs = [];
   let textTruncated = false;
@@ -653,13 +710,69 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
       textTruncated = true;
       return null;
     }
-    const parts = ids.map(id => (doc.getElementById ? doc.getElementById(id) : null)?.textContent || '');
+    const parts = ids.map(id => byId(el, id)?.textContent || '');
     if (parts.some(part => tooLong(part, LIMITS.text))) return null;
     return parts.join(' ').trim();
   };
 
+  // ARIA name-from-content, bounded: descendants contribute their own aria-labelledby,
+  // aria-label or img alt instead of their text, and hidden subtrees contribute nothing.
+  // A calendar day rendered as "20" with an aria-label child is named "Sunday, October 20".
+  const contentName = el => {
+    if (!el.childNodes) return el.textContent || '';
+    const parts = [];
+    let budget = LIMITS.contentNodes;
+    const visit = (node, depth) => {
+      if (budget-- <= 0) {
+        textTruncated = true;
+        return;
+      }
+      if (node.nodeType === 3) {
+        parts.push(node.nodeValue);
+        return;
+      }
+      if (node.nodeType !== 1 || depth > LIMITS.contentDepth) return;
+      if (node !== el) {
+        const tag = node.tagName;
+        if (node.hidden || node.getAttribute('aria-hidden') === 'true' || ['SCRIPT', 'STYLE', 'TEMPLATE'].includes(tag)) return;
+        const referenced = node.hasAttribute('aria-labelledby') ? labelledBy(node) : '';
+        if (referenced) {
+          parts.push(referenced);
+          return;
+        }
+        const aria = (node.getAttribute('aria-label') || '').trim();
+        if (aria) {
+          parts.push(aria);
+          return;
+        }
+        if (tag === 'IMG') {
+          parts.push(node.getAttribute('alt') || '');
+          return;
+        }
+      }
+      for (const child of node.childNodes) visit(child, depth + 1);
+    };
+    visit(el, 0);
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  };
+
+  // The nearest *named* grouping container: disambiguates repeated labels ("20" in two
+  // month grids, "Done" in two dialogs). Unnamed containers are skipped, not guessed.
+  const contextOf = el => {
+    let node = composedParent(el);
+    for (let depth = 0; node && depth < LIMITS.contextDepth; depth++, node = composedParent(node)) {
+      const explicit = (node.getAttribute('role') || '').trim().toLowerCase().split(/\s+/)[0];
+      const role = explicit || IMPLICIT_GROUPS[node.tagName];
+      if (!role || !GROUP_ROLES.includes(role)) continue;
+      const legend = node.tagName === 'FIELDSET' && node.querySelector ? node.querySelector('legend') : null;
+      const name = (labelledBy(node) || node.getAttribute('aria-label') || (legend ? legend.textContent : '') || '').trim();
+      if (name && !tooLong(name, LIMITS.text)) return bounded(role + ': ' + name, LIMITS.label);
+    }
+    return '';
+  };
+
   const semantics = el => {
-    if (!(el instanceof HTMLElement) || secure(el) || el.closest('[data-private], [data-sensitive]')) return null;
+    if (!(el instanceof HTMLElement) || secure(el) || closestComposed(el, '[data-private], [data-sensitive]')) return null;
     const described = roleOf(el);
     if (!described) return null;
     const { role, kind } = described;
@@ -677,7 +790,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     // content first, with title only as a last-resort tooltip (ARIA name-from-content).
     const fallback = textLike
       ? el.getAttribute('title') || el.getAttribute('placeholder')
-      : (el.textContent || '').trim() || el.getAttribute('title');
+      : contentName(el) || el.getAttribute('title');
     const label = referenced || el.getAttribute('aria-label') || labels || fallback || '';
 
     const result = { role, label: bounded(label.trim(), LIMITS.label), operations: [] };
@@ -716,6 +829,8 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
       result.selected = el.getAttribute('aria-selected') === 'true';
     }
     if (el.hasAttribute('aria-expanded')) result.expanded = el.getAttribute('aria-expanded') === 'true';
+    const context = contextOf(el);
+    if (context) result.context = context;
     return result;
   };
 
@@ -729,15 +844,19 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     const semantic = semantics(el);
     if (!semantic || !semantic.operations.length || !el.isConnected || el.ownerDocument !== doc) return null;
     const rect = el.getBoundingClientRect();
-    const x = rect.x + rect.width / 2;
-    const y = rect.y + rect.height / 2;
-    let visible = rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x < innerWidth && y < innerHeight;
-    for (let parent = el; parent; parent = parent.parentElement) {
+    let visible = rect.width > 0 && rect.height > 0 && rect.x + rect.width > 0 && rect.y + rect.height > 0 &&
+      rect.x < innerWidth && rect.y < innerHeight;
+    for (let parent = el; parent; parent = composedParent(parent)) {
       if (isHidden(parent)) visible = false;
     }
-    const hit = doc.elementFromPoint(x, y);
-    const clear = !!hit && (hit === el || el.contains(hit));
-    const enabled = !el.matches(':disabled') && !el.closest('[aria-disabled="true"], [inert]');
+    // A pointer-events:none control (an accessibility overlay over its row) is reached
+    // through its own component: a hit inside its parent counts, a foreign overlay does not.
+    const passThrough = getComputedStyle(el).pointerEvents === 'none';
+    const point = visible ? clearPoint(rect, passThrough ? composedParent(el) || el : el) : null;
+    const clear = !!point;
+    const x = point ? point.x : rect.x + rect.width / 2;
+    const y = point ? point.y : rect.y + rect.height / 2;
+    const enabled = !el.matches(':disabled') && !closestComposed(el, '[aria-disabled="true"], [inert]');
     // Bounded internal semantic/value fingerprint, never exposed in observations.
     if (el.attributes.length > LIMITS.attributes) {
       textTruncated = true;
@@ -775,20 +894,98 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     return { semantic, visible, clear, enabled, fingerprint, x, y };
   };
 
-  const walker = doc.createTreeWalker(doc.documentElement, NodeFilter.SHOW_ELEMENT);
+  // Scrolling: the page itself and visible, named (or roled) scroll containers. Their
+  // identity is only what they are; the scroll position is reported as a value.
+  const scrollOperations = (top, max) => {
+    const operations = [];
+    if (top > 1) operations.push('scroll_up');
+    if (top < max - 1) operations.push('scroll_down');
+    return operations;
+  };
+  const scroller = doc.scrollingElement || null;
+  const pageState = () => {
+    if (!scroller) return null;
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    if (max <= 1) return null;
+    const semantic = {
+      role: 'page',
+      label: bounded(doc.title || 'page', LIMITS.label),
+      operations: scrollOperations(scroller.scrollTop, max),
+      value: Math.round(scroller.scrollTop / max * 100) + '% scrolled',
+    };
+    return { semantic, visible: true, clear: true, enabled: true, fingerprint: '["page"]', x: innerWidth / 2, y: innerHeight / 2 };
+  };
+  const scrollState = el => {
+    if (!(el instanceof HTMLElement) || el === scroller || el === doc.body) return null;
+    if (!(el.scrollHeight > el.clientHeight + 1) || el.clientHeight < LIMITS.minScrollHeight) return null;
+    const style = getComputedStyle(el);
+    if (!['auto', 'scroll'].includes(style.overflowY)) return null;
+    const role = (el.getAttribute('role') || '').trim().toLowerCase().split(/\s+/)[0];
+    const referenced = labelledBy(el);
+    if (referenced === null) return null;
+    const name = (referenced || el.getAttribute('aria-label') || '').trim();
+    if (!name && !SCROLL_ROLES.includes(role)) return null;
+    if (tooLong(name, LIMITS.text) || closestComposed(el, '[data-private], [data-sensitive]')) return null;
+    const rect = el.getBoundingClientRect();
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + rect.height / 2;
+    let visible = rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0 && x < innerWidth && y < innerHeight;
+    for (let parent = el; parent; parent = composedParent(parent)) {
+      if (isHidden(parent)) visible = false;
+    }
+    const hit = deepHit(x, y);
+    const clear = !!hit && (hit === el || composedContains(el, hit));
+    const max = el.scrollHeight - el.clientHeight;
+    const semantic = {
+      role: role || 'region',
+      label: bounded(name, LIMITS.label),
+      operations: scrollOperations(el.scrollTop, max),
+      value: Math.round(el.scrollTop / max * 100) + '% scrolled',
+    };
+    const context = contextOf(el);
+    if (context) semantic.context = context;
+    const fingerprint = JSON.stringify(['scroll', el.tagName, role, name, IDENTITY_ATTRIBUTES.map(key => el.getAttribute(key))]);
+    return { semantic, visible, clear, enabled: !closestComposed(el, '[inert]'), fingerprint, x, y };
+  };
+
+  // Depth-first over the document and each open shadow root, in document order.
+  const walkers = [doc.createTreeWalker(doc.documentElement, NodeFilter.SHOW_ELEMENT)];
+  const nextNode = () => {
+    while (walkers.length) {
+      const node = walkers[walkers.length - 1].nextNode();
+      if (!node) {
+        walkers.pop();
+        continue;
+      }
+      if (node.shadowRoot && walkers.length <= LIMITS.shadowDepth) {
+        walkers.push(doc.createTreeWalker(node.shadowRoot, NodeFilter.SHOW_ELEMENT));
+      }
+      return node;
+    }
+    return null;
+  };
+  const page = pageState();
+  // The page's scroll candidate always fits: it takes the last slot.
+  const capacity = page ? maxElements - 1 : maxElements;
   let scanned = 0;
   let elementsTruncated = false;
   let node;
-  while (scanned < LIMITS.scan && (node = walker.nextNode())) {
+  while (scanned < LIMITS.scan && (node = nextNode())) {
     scanned++;
-    const current = state(node);
-    if (!current || !current.visible || !current.clear || !current.enabled) continue;
-    if (refs.length === maxElements) {
+    let kind = 'control';
+    let current = state(node);
+    if (!current) {
+      kind = 'scroll';
+      current = scrollState(node);
+    }
+    if (!current || !current.visible || !current.clear || !current.enabled || !current.semantic.operations.length) continue;
+    if (refs.length === capacity) {
       elementsTruncated = true;
       break;
     }
-    refs.push({ element: node, initial: current });
+    refs.push({ element: node, kind, initial: current });
   }
+  if (page && page.semantic.operations.length) refs.push({ element: scroller, kind: 'page', initial: page });
   const truncation = { elements: elementsTruncated, scan: scanned === LIMITS.scan, text: textTruncated };
   // Only SHA-256 digests cross CDP (at most 128 * 64 characters); raw attributes stay in-page.
   // Fail closed when SubtleCrypto is unavailable (e.g. an insecure non-local HTTP context).
@@ -837,7 +1034,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     if (document !== doc || location.href !== url) return { status: 'stale', reason: 'navigation' };
     const ref = refs[index];
     if (!ref) return { status: 'stale', reason: 'target_missing' };
-    const current = state(ref.element);
+    const current = ref.kind === 'page' ? pageState() : ref.kind === 'scroll' ? scrollState(ref.element) : state(ref.element);
     if (!current) return { status: 'stale', reason: 'target_changed' };
     if (!current.enabled || !current.visible || !current.clear) return { status: 'blocked', reason: 'not_interactable' };
     if (current.fingerprint !== ref.initial.fingerprint) return { status: 'stale', reason: 'target_changed' };
@@ -862,6 +1059,11 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     } else if (operation === 'press' && trusted === true && trustedInput && typeof payload === 'string') {
       HTMLElement.prototype.focus.call(element);
       return ready('press');
+    } else if (operation === 'scroll_down' || operation === 'scroll_up') {
+      // Deterministic in both modes: 80% of the visible height, like Page Down.
+      const height = ref.kind === 'page' ? innerHeight : element.clientHeight;
+      const distance = Math.max(LIMITS.minScrollHeight, Math.round(height * 0.8));
+      element.scrollBy(0, operation === 'scroll_down' ? distance : -distance);
     } else {
       return { status: 'blocked', reason: 'unsupported_action' };
     }

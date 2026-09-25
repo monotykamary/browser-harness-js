@@ -222,7 +222,7 @@ test("interactionInput reaches the controller, and act accepts only bounded sele
     await assert.rejects(act(extra), /Invalid/, JSON.stringify(extra));
   }
   const descriptor = (await provider.list()).find(d => d.name === "observe")!;
-  const candidate = { id: "t", role: "combobox", label: "Cabin", operations: ["select"], options: ["Economy"], expanded: false, selected: true };
+  const candidate = { id: "t", role: "combobox", label: "Cabin", operations: ["select"], options: ["Economy"], expanded: false, selected: true, context: "dialog: Search" };
   assert.equal(validationMessage(descriptor.outputSchema as any, { ...observation(), candidates: [candidate] }), undefined);
   await provider.close();
 });
