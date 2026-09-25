@@ -19,11 +19,12 @@ export const browserHarnessComponent: FabricComponentDefinition<BrowserHarnessCo
       interactionModulePath: { type: "string", minLength: 1, description: "Trusted host module exporting InteractionController; relative to invocation cwd. Optional, requires allowedOrigins." },
       allowedOrigins: { type: "array", minItems: 1, maxItems: 32, items: { type: "string", minLength: 1, maxLength: 2048, pattern: "^https?://[^/?#@\\s]+$" }, description: "Exact http/https origins for guarded interactions only. No wildcards." },
       callTimeoutMs: { type: "integer", minimum: 100, maximum: 60000, description: "Overall per-call bound, including waitForChange; default 10000ms. Cancellation does not roll back effects." },
+      interactionInput: { enum: ["synthetic", "trusted"], description: "Guarded input mode. synthetic (default) activates through the DOM; trusted sends real CDP mouse/keyboard input at the rechecked target and enables press and contenteditable typing." },
     },
     required: ["modulePath", "wsUrl", "allowedMethods"],
     anyOf: [
       { type: "object", required: ["interactionModulePath", "allowedOrigins"], properties: { interactionModulePath: { type: "string" }, allowedOrigins: { type: "array" } } },
-      { type: "object", properties: { allowedMethods: { type: "array", minItems: 1 }, interactionModulePath: false, allowedOrigins: false } },
+      { type: "object", properties: { allowedMethods: { type: "array", minItems: 1 }, interactionModulePath: false, allowedOrigins: false, interactionInput: false } },
     ],
     additionalProperties: false,
   },

@@ -85,8 +85,9 @@ to bypass a denial or required approval. The controller is model-neutral; Jev is
 optional, and model confidence is **not** permission.
 
 `InteractionController` is importable from `sdk/interaction.ts`. REPL globals:
-`InteractionController` and `createInteractionController({allowedOrigins})` (uses
+`InteractionController` and `createInteractionController({allowedOrigins, input?})` (uses
 the persistent transport, **never** its mutable active-target pointer).
+`input: 'trusted'` opts into real CDP mouse/keyboard input (see below).
 
 ```bash
 browser-harness-js <<'EOF'
@@ -114,20 +115,43 @@ return await guard.waitForChange({ scope: guardScope, revision: seen.revision, t
 ```
 
 - `observe({scope:{sessionId},maxElements?}, {signal?}?)` returns `{scope,
-  observationId,revision,candidates:[{id,role,label,operations,value?,checked?}],url,title,truncated,
-  truncation:{elements,scan,text}}`. Default 64 candidates, maximum 128; scan cap
+  observationId,revision,candidates:[{id,role,label,operations,value?,checked?,selected?,expanded?,options?}],
+  url,title,truncated,truncation:{elements,scan,text}}`. Default 64 candidates, maximum 128; scan cap
   4096 light-DOM elements. Labels/title/URL are bounded to 256/512/2048 characters.
   IDs are opaque, observation-scoped handles, not backend node IDs or locators.
-- `act({scope,observationId,action:{targetId,operation,text?}}, {signal?}?)`
+- `act({scope,observationId,action:{targetId,operation,text?,option?,key?}}, {signal?}?)`
   returns `{status,reason?}`. **One attempted action consumes the observation**;
   observe again before any next attempt. New observations invalidate previous
   handles in the same scope. Scope mutations are serialized across controllers
   sharing a Session; separate aliases/attachments are not a global browser lock.
-- `click` is synthetic native DOM activation, not a trusted pointer sequence.
-  `type` **replaces the entire value**, using the native input/textarea setter and
-  one bubbling `input` event; no focus, key events, `change`, or automatic submit.
-  Maximum literal text length **4096** (host and page). Ordinary text/search inputs
-  and textarea expose their bounded `value`; checkbox/radio expose `checked`.
+- Candidates come from native controls (buttons, links, text/search/url/number
+  inputs, textareas, checkboxes, radios, single `<select>`) and allowlisted ARIA
+  roles on any element: `button link checkbox radio switch tab menuitem
+  menuitemcheckbox menuitemradio option treeitem combobox textbox searchbox`.
+  Unknown roles are not guessed at. Names follow ARIA precedence:
+  `aria-labelledby` (up to 8 ids), `aria-label`, `<label>`, `title`, then
+  placeholder/text. States: `checked` (native or `aria-checked`), `selected`
+  (`aria-selected` on options/tabs), `expanded` (`aria-expanded`), `value`, and
+  `options` (a `<select>`'s first 64 option labels).
+- Operations are offered per candidate; use only those listed:
+  - `click`: synthetic DOM `click()` by default; a real mouse move/press/release
+    at the freshly rechecked center with `input: 'trusted'`.
+  - `type` (`text`): **replaces the entire value**, maximum **4096** characters.
+    Synthetic mode uses the native setter and one bubbling `input` event (no focus,
+    keys, `change` or submit). Trusted mode focuses the target, selects its whole
+    content and inserts the text as real input, which also works for
+    contenteditable textboxes (offered only in trusted mode).
+  - `select` (`option`): sets a native `<select>` to `options[option]` and emits
+    `input` and `change`.
+  - `press` (`key`, trusted only): focuses the target, then sends one key from
+    `Enter Escape Tab Backspace Delete ArrowUp ArrowDown ArrowLeft ArrowRight Home
+    End PageUp PageDown Space`. Use it for autocomplete lists (type, ArrowDown,
+    Enter) and form submission.
+- Trusted input is the only way to drive widgets that ignore synthetic events
+  (pointerdown handlers, keyboard-driven comboboxes). The page rechecks the target
+  immediately before reporting its point; a script may still move content during
+  the one CDP round trip before the input lands. Trusted mode also enables focus
+  emulation so background tabs accept focus and keys.
   Password, sensitive autocomplete and marked-private controls are excluded, as
   are conservative sensitive name/id/label/title/placeholder matches (e.g. token,
   PIN, payment, account, email/address). These heuristics can overexclude and are
@@ -166,16 +190,20 @@ Require **1–32** exact HTTP(S) `allowedOrigins`, each at most **2048** charact
 **256** characters. Empty origin lists reject construction. No paths,
 wildcards, credentials or implicit current-origin grant. Origin, document,
 connection generation, native node identity, semantics/value, enabled/visible
-state, center-point occlusion and unchanged geometry are rechecked before effects.
+state and center-point occlusion are rechecked before effects. Identity is what a
+target means (role, full untruncated name and content, operations, options,
+value/checked, and `id`/`name`/`type`/`href`/`role`/`for`/`form`/`action`);
+cosmetic churn (class, style, tooltip titles, `data-*`) and layout shifts keep a
+target valid, and trusted input always uses the freshly rechecked center.
 Navigation, disconnect/reconnect, invalidation and replay expire handles.
 Reconnect retains the selected endpoint/transport/options; reattach after a
 connection change. Injected adapters should expose Session-compatible `onEvent`,
 `getConnectionGeneration` and the `expectedGeneration` dispatch fence for lifecycle
 invalidation; remote-object/document checks still apply to `_call`-only adapters.
 
-Initial scope is conservative: top-level light-DOM native buttons, links, check/radio
-inputs and simple text fields only; no frames, shadow trees, ARIA custom widgets,
-`aria-labelledby`, canvas, scrolling, rich editors or trusted-input guarantees.
+Scope is still bounded: main-frame light DOM only; no frames, shadow trees,
+canvas, scrolling, multi-selects, drag or file inputs. Controls must be visible
+in the viewport and unoccluded.
 Unsupported/hidden/occluded controls are omitted. This is not a complete AX tree,
 a sandbox around raw CDP, a navigation/network firewall, or an atomic GUI transaction.
 The page/user may race effects and scripts may navigate after activation; every

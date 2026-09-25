@@ -56,21 +56,26 @@ See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes
 Prefer the exact deterministic API route when known. At unknown UI decision
 boundaries, default to **guarded observe → act → verify**. Import
 `InteractionController` from `skills/cdp/sdk/interaction.ts`, or use the REPL
-`createInteractionController({ allowedOrigins: ['https://example.com'] })`.
+`createInteractionController({ allowedOrigins: ['https://example.com'] })`
+(add `input: 'trusted'` for real mouse and keyboard input).
 Every `observe`, `act` and `waitForChange` requires `{scope:{sessionId}}`; no
 active-tab routing. See the [API and working snippet](skills/cdp/SKILL.md#guarded-interaction-at-unknown-ui-boundaries).
 
 Observations offer opaque, single-observation targets (64 default / 128 maximum),
-explicit truncation, safe control `value` (up to 4096 characters) and `checked`
-state. Sensitive controls are excluded using private markers, autocomplete and
+explicit truncation, ARIA roles and names (including `aria-labelledby`), safe
+control `value` (up to 4096 characters), `checked`/`selected`/`expanded` state and
+native `<select>` options. Sensitive controls are excluded using private markers, autocomplete and
 conservative naming heuristics; this is not general secret detection/DLP. Exact
 bounded identity fingerprints stay in-page; only SHA-256 digests cross CDP
 (requires in-page SubtleCrypto, normally HTTPS/localhost). Actions recheck origin, document/connection, native
-identity, semantics, visibility, enabled state, occlusion and geometry. Initial
-mechanics are synthetic native DOM click and replacement type, limited to
-main-frame light-DOM controls; no trusted-input, full AX, frame or editor promise.
-Typing replaces the entire value (maximum 4096 literal characters), then emits
-one synthetic bubbling/composed `input` event: no focus, keys, `change` or submit.
+identity, semantics, visibility, enabled state and occlusion. Cosmetic churn and
+layout shifts do not invalidate a target; a change in its meaning does.
+Operations are `click`, `type` (replaces the entire value, maximum 4096
+characters), `select` (a native `<select>` option) and, with `input: 'trusted'`,
+`press` (an allowlisted key). Synthetic mode (the default) activates through the
+DOM; trusted mode sends real CDP mouse, text and key input at the rechecked target,
+which pointer-driven widgets and autocomplete comboboxes need. Scope remains
+main-frame light DOM: no frames, shadow trees, canvas or scrolling yet.
 
 `executed` means dispatched, not goal achieved. **stale → reobserve; blocked/denied
 → approval or stop; outcome_unknown → inspect, never blindly retry.** Cancellation

@@ -80,6 +80,8 @@ test("validates config and inputs without connecting", async () => {
     { ...config, allowedOrigins: ["https://fixture.example/path"] },
     { ...config, wsUrl: "ws://user:password@localhost:9222" },
     { ...config, allowedMethods: ["Runtime.*"] }, { ...config, callTimeoutMs: 99 },
+    { ...config, interactionInput: "fast" },
+    { ...config, interactionModulePath: undefined, allowedOrigins: undefined, interactionInput: "trusted" },
   ]) {
     assert.ok(validate(value)); assert.throws(() => new BrowserHarnessProvider(value as BrowserHarnessConfig));
   }
@@ -203,4 +205,24 @@ test("contract allows read-only context, orders handle-changing reads, separates
   const descriptors = interactionDescriptors("fixture", { type: "object" });
   assert.ok(descriptors.every(d => d.effect?.ordering === "ordered"));
   assert.match(descriptors.find(d => d.name === "act")!.description, /not goal success/);
+});
+
+test("interactionInput reaches the controller, and act accepts only bounded select/press payloads", async () => {
+  const validate = (value: Record<string, unknown>) => validationMessage(browserHarnessComponent.configSchema!, value);
+  assert.equal(validate({ ...config, interactionInput: "trusted" }), undefined);
+  const { provider, load } = setup({}, { interactionInput: "trusted" });
+  await provider.invoke("connect", {}, context());
+  await provider.invoke("observe", { scope }, context());
+  assert.deepEqual(load.mock.calls[0]!.arguments[2], { allowedOrigins: ["https://fixture.example"], input: "trusted" });
+  const act = (extra: Record<string, unknown>) =>
+    provider.invoke("act", { ...action(), action: { ...action().action, ...extra } }, context());
+  await act({ operation: "select", option: 2 });
+  await act({ operation: "press", key: "ArrowDown" });
+  for (const extra of [{ option: 64 }, { option: -1 }, { key: "F12" }, { key: "Enter; rm -rf" }]) {
+    await assert.rejects(act(extra), /Invalid/, JSON.stringify(extra));
+  }
+  const descriptor = (await provider.list()).find(d => d.name === "observe")!;
+  const candidate = { id: "t", role: "combobox", label: "Cabin", operations: ["select"], options: ["Economy"], expanded: false, selected: true };
+  assert.equal(validationMessage(descriptor.outputSchema as any, { ...observation(), candidates: [candidate] }), undefined);
+  await provider.close();
 });

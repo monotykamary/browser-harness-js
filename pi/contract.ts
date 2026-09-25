@@ -8,6 +8,9 @@ export interface HarnessCandidate {
   operations: string[];
   value?: string;
   checked?: boolean;
+  selected?: boolean;
+  expanded?: boolean;
+  options?: string[];
 }
 export interface HarnessObservation {
   scope: Record<string, string>;
@@ -46,6 +49,8 @@ const observationSchema = {
           id: handle, role: { type: "string", maxLength: 256 }, label: { type: "string", maxLength: 4096 },
           operations: { type: "array", minItems: 0, maxItems: 32, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 64 } },
           value: { type: "string", maxLength: 4096 }, checked: { type: "boolean" },
+          selected: { type: "boolean" }, expanded: { type: "boolean" },
+          options: { type: "array", maxItems: 64, items: { type: "string", maxLength: 256 } },
         },
         required: ["id", "role", "label", "operations"],
       },
@@ -82,12 +87,14 @@ export function interactionDescriptors(provider: string, scopeSchema: Record<str
     },
     {
       name: "act", risk: "execute", effect,
-      description: `Revalidate and consume one observed target before dispatch. executed is not goal success. stale means re-observe; blocked means stop/approval; outcome_unknown means inspect, never blindly retry. ${grantNote}`.trim(),
+      description: `Revalidate and consume one observed target before dispatch. Use only an operation the candidate offers: click, type (text replaces the value), select (option indexes the candidate's options) or press (key; trusted input only). executed is not goal success. stale means re-observe; blocked means stop/approval; outcome_unknown means inspect, never blindly retry. ${grantNote}`.trim(),
       inputSchema: schema({
         observationId: handle,
         action: {
           type: "object", properties: {
             targetId: handle, operation: { type: "string", minLength: 1, maxLength: 64 }, text: { type: "string", maxLength: 4096 },
+            option: { type: "integer", minimum: 0, maximum: 63 },
+            key: { enum: ["Enter", "Escape", "Tab", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Space"] },
           }, required: ["targetId", "operation"], additionalProperties: false,
         },
       }, ["observationId", "action"]),

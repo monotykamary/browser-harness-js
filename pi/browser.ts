@@ -15,6 +15,8 @@ export interface BrowserHarnessConfig {
   /** Trusted SDK interaction.ts module; requires exact allowedOrigins. */
   interactionModulePath?: string;
   allowedOrigins?: string[];
+  /** Guarded input mode; requires interactionModulePath. Default synthetic. */
+  interactionInput?: "synthetic" | "trusted";
   callTimeoutMs?: number;
 }
 export interface BrowserHarnessSession {
@@ -25,7 +27,11 @@ export interface BrowserHarnessSession {
   close(): void;
 }
 export type BrowserHarnessSessionLoader = (modulePath: string) => Promise<BrowserHarnessSession>;
-export type BrowserHarnessInteractionLoader = (modulePath: string, session: BrowserHarnessSession, options: { allowedOrigins: string[] }) => Promise<HarnessInteraction>;
+export type BrowserHarnessInteractionLoader = (
+  modulePath: string,
+  session: BrowserHarnessSession,
+  options: { allowedOrigins: string[]; input?: "synthetic" | "trusted" },
+) => Promise<HarnessInteraction>;
 const loadSession: BrowserHarnessSessionLoader = async modulePath => {
   const module = await import(pathToFileURL(modulePath).href);
   if (typeof module.Session !== "function") throw new Error("Browser Harness module must export Session");
@@ -74,6 +80,10 @@ export class BrowserHarnessProvider implements FabricProvider {
       })) throw new Error("Guarded Browser Harness requires 1–32 exact http/https allowedOrigins");
     } else if (config.allowedOrigins !== undefined || config.allowedMethods.length === 0) {
       throw new Error("Guarded Browser Harness needs interactionModulePath and allowedOrigins together");
+    }
+    if (config.interactionInput !== undefined &&
+        (config.interactionModulePath === undefined || !["synthetic", "trusted"].includes(config.interactionInput))) {
+      throw new Error("interactionInput must be synthetic or trusted, with guarded interactions configured");
     }
     if (config.callTimeoutMs !== undefined && (!Number.isInteger(config.callTimeoutMs) || config.callTimeoutMs < 100 || config.callTimeoutMs > 60000)) throw new Error("Invalid Browser Harness callTimeoutMs");
     this.config = Object.freeze({ ...config, allowedMethods: Object.freeze([...config.allowedMethods]) as unknown as string[], ...(config.allowedOrigins ? { allowedOrigins: Object.freeze([...config.allowedOrigins]) as unknown as string[] } : {}) });
@@ -146,7 +156,10 @@ export class BrowserHarnessProvider implements FabricProvider {
           return await runAbortable(signal, () => this.#track(session._call(method, args.params ?? {}, typeof args.sessionId === "string" ? { sessionId: args.sessionId } : undefined)));
         } finally { controller?.invalidate?.(); }
       }
-      this.#interaction ??= this.interactionLoader(this.config.interactionModulePath!, session, { allowedOrigins: [...this.config.allowedOrigins!] }).then(async controller => {
+      this.#interaction ??= this.interactionLoader(this.config.interactionModulePath!, session, {
+        allowedOrigins: [...this.config.allowedOrigins!],
+        ...(this.config.interactionInput ? { input: this.config.interactionInput } : {}),
+      }).then(async controller => {
         if (this.#closed) { await controller.close(); throw new Error("Browser Harness provider closed"); }
         return controller;
       }).catch(error => { this.#interaction = undefined; throw error; });

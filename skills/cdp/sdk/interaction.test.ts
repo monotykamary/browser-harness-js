@@ -45,6 +45,8 @@ class ElementFixture {
       'data-private' in this.attrs || 'data-sensitive' in this.attrs;
   }
   click() { this.clicks++; if (this.type === 'checkbox') this.checked = !this.checked; }
+  focuses = 0;
+  focus() { this.focuses++; }
   dispatchEvent(_event: Event) { this.inputs++; return true; }
 }
 class InputFixture extends ElementFixture {
@@ -230,8 +232,12 @@ test('fingerprint transport is digest-only and oversized exact identities are ex
   assert.ok(JSON.stringify(snapshot.revisionState).length < 9000);
   assert.ok(!JSON.stringify(snapshot).includes('RAW_FINGERPRINT_SENTINEL'));
   assert.ok(!JSON.stringify(seen).includes('fingerprint'));
+  // Cosmetic attributes are not identity; identifying ones are.
   page.nodes[0]!.attrs['data-internal'] += 'tail';
-  assert.equal((await controller.act(action(seen))).status, 'stale');
+  assert.equal((await controller.act(action(seen))).status, 'executed');
+  const again = await controller.observe({ scope, maxElements: 128 });
+  page.nodes[0]!.attrs.id = 'renamed';
+  assert.equal((await controller.act(action(again))).status, 'stale');
   page.nodes[0]!.attrs = Object.fromEntries(Array.from({ length: 64 }, (_, i) => [`data-${i}`, 'x'.repeat(1024)]));
   const truncated = await controller.observe({ scope, maxElements: 128 });
   assert.equal(truncated.candidates.length, 127); assert.equal(truncated.truncation.text, true);
@@ -386,7 +392,8 @@ test('native identity, labels, geometry, visibility, disabled state and occlusio
   const mutations: [(page: PageFixture) => void, string][] = [
     [page => { page.nodes[0]!.isConnected = false; page.nodes[0] = new ElementFixture(); page.refreshNodes(); }, 'stale'],
     [page => { page.nodes[0]!.textContent = 'Delete'; }, 'stale'],
-    [page => { page.nodes[0]!.rect.x += 1; }, 'stale'],
+    [page => { page.nodes[0]!.attrs.href = 'https://elsewhere.test/'; }, 'stale'],
+    [page => { page.nodes[0]!.attrs.role = 'link'; }, 'stale'],
     [page => { page.nodes[0]!.hidden = true; }, 'blocked'],
     [page => { page.nodes[0]!.disabled = true; }, 'blocked'],
     [page => { page.nodes[0]!.hit = false; }, 'blocked'],
@@ -496,7 +503,10 @@ test('default/max element limits, long-label semantic changes and unsupported co
   const oversized = await controller.observe({ scope }); assert.equal(oversized.truncation.text, true);
   page.nodes = [new ElementFixture('DIV', 'custom'), new InputFixture('email'), new ElementFixture()];
   page.nodes[2]!.attrs['aria-labelledby'] = 'external'; page.refreshNodes();
-  assert.equal((await controller.observe({ scope })).candidates.length, 0);
+  // Plain DIVs and email inputs stay unsupported; an unresolvable aria-labelledby
+  // falls back to the next naming source instead of hiding the control.
+  const fallback = await controller.observe({ scope });
+  assert.deepEqual(fallback.candidates.map(c => [c.role, c.label]), [['button', 'Continue']]);
   controller.close();
 });
 
@@ -519,4 +529,78 @@ test('controllers share scope serialization, including cancellation of queued mu
   const abort = new AbortController(); const second = other.act(action(b), { signal: abort.signal }); abort.abort();
   release(); assert.equal((await first).status, 'executed'); assert.equal((await second).status, 'blocked'); assert.equal(page.nodes[0]!.clicks, 1);
   controller.close(); other.close();
+});
+
+test('trusted input: the page revalidates, then the host sends real mouse, text and key events', async () => {
+  const session = new FixtureSession();
+  const controller = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], input: 'trusted' });
+  const page = session.pages.get('one')!;
+  const inputCalls = () => session.calls.filter(c => c.method.startsWith('Input.')).map(c => [c.method, c.params]);
+
+  let seen = await controller.observe({ scope });
+  assert.ok(session.calls.some(c => c.method === 'Emulation.setFocusEmulationEnabled'));
+  assert.deepEqual(seen.candidates[0]!.operations, ['click', 'press']);
+  assert.equal((await controller.act(action(seen, 0))).status, 'executed');
+  // No synthetic click: the page only rechecked the target and reported its center.
+  assert.equal(page.nodes[0]!.clicks, 0);
+  const point = { x: 60, y: 25 };
+  assert.deepEqual(inputCalls(), [
+    ['Input.dispatchMouseEvent', { type: 'mouseMoved', ...point }],
+    ['Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 }],
+    ['Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 }],
+  ]);
+
+  session.calls.length = 0;
+  seen = await controller.observe({ scope });
+  const press = (key: string) => ({ scope, observationId: seen.observationId, action: { targetId: seen.candidates[0]!.id, operation: 'press', key } });
+  assert.equal((await controller.act(press('F12'))).reason, 'unsupported_action');
+  assert.deepEqual(inputCalls(), [], 'unknown keys never reach the page');
+  seen = await controller.observe({ scope });
+  assert.equal((await controller.act(press('Enter'))).status, 'executed');
+  assert.equal(page.nodes[0]!.focuses, 1, 'the page focuses the rechecked target first');
+  assert.deepEqual(inputCalls(), [
+    ['Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' }],
+    ['Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }],
+  ]);
+  controller.close();
+});
+
+test('synthetic controllers refuse press and malformed select/type payloads before dispatch', async () => {
+  const { controller, session } = setup();
+  const dispatches = () => session.calls.filter(c => isDispatch(c.method, c.params)).length;
+  let seen = await controller.observe({ scope });
+  assert.ok(seen.candidates.every(c => !c.operations.includes('press')));
+  const attempt = (extra: Record<string, unknown>) =>
+    controller.act({ scope, observationId: seen.observationId, action: { targetId: seen.candidates[0]!.id, ...extra } as any });
+  for (const extra of [
+    { operation: 'press', key: 'Enter' },
+    { operation: 'select', option: -1 },
+    { operation: 'select', option: 1.5 },
+    { operation: 'select', option: 0 },
+    { operation: 'scroll' },
+  ]) {
+    assert.equal((await attempt(extra)).reason, 'unsupported_action', JSON.stringify(extra));
+    seen = await controller.observe({ scope });
+  }
+  assert.equal(dispatches(), 0);
+  assert.throws(() => new InteractionController(session, { allowedOrigins: ['https://allowed.test'], input: 'fast' as any }), /input must be/);
+  controller.close();
+});
+
+test('layout shifts and cosmetic churn keep a target; its meaning and occlusion still decide', async () => {
+  const cosmetic: ((page: PageFixture) => void)[] = [
+    page => { page.nodes[0]!.rect.x += 1; },
+    page => { page.nodes[0]!.attrs.class = 'hovered'; },
+    page => { page.nodes[0]!.attrs.style = 'outline: 1px solid'; },
+    page => { page.nodes[0]!.attrs.title = 'Continue [ctrl-option-c]'; },
+  ];
+  for (const mutate of cosmetic) {
+    const { controller, page } = setup(); const seen = await controller.observe({ scope }); mutate(page);
+    assert.equal((await controller.act(action(seen))).status, 'executed');
+    assert.equal(page.nodes[0]!.clicks, 1); controller.close();
+  }
+  const { controller, page } = setup(); const seen = await controller.observe({ scope });
+  page.nodes[0]!.rect.x += 1; page.nodes[0]!.hit = false;
+  assert.equal((await controller.act(action(seen))).status, 'blocked', 'a shift under an overlay is still occluded');
+  controller.close();
 });
