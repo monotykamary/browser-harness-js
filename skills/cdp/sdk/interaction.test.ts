@@ -342,7 +342,7 @@ test('cooperative close returns promptly, blocks queued effects and releases lat
   response.release(); await tick(); await tick(); assert.equal(late.session.objects.size, 0);
 });
 
-test('exports and REPL registration are additive, exact origins and explicit scope required', async () => {
+test('guard exports and scoped browser registration require exact origins and scope', async () => {
   const { session, controller } = setup();
   for (const origin of ['*', 'https://allowed.test/', 'https://allowed.test/path', 'https://u:p@allowed.test', 'null', 'file://']) {
     assert.throws(() => new InteractionController(session, { allowedOrigins: [origin] }));
@@ -352,7 +352,8 @@ test('exports and REPL registration are additive, exact origins and explicit sco
   await assert.rejects(controller.observe({ scope, maxElements: 129 }), /maxElements/);
   assert.throws(() => new InteractionController(session, { allowedOrigins: [] }), /1..32/);
   const source = readFileSync(new URL('./repl.ts', import.meta.url), 'utf8');
-  for (const name of ['InteractionController', 'createInteractionController', 'axClick', 'axType', 'cdp', 'session']) assert.ok(source.includes(`(globalThis as any).${name} =`));
+  for (const name of ['browser', 'cdp', 'session']) assert.ok(source.includes(`(globalThis as any).${name} =`));
+  for (const name of ['axView', 'axClick', 'axType', 'parseAxRefs', 'learnings', 'help']) assert.ok(!source.includes(`(globalThis as any).${name} =`));
   controller.close();
 });
 

@@ -2,21 +2,22 @@
 
 # Browser Harness JS ♞
 
-A model-neutral bridge from agents to Chrome: every CDP method as a typed JS call, plus an opt-in guarded interaction layer for unknown UI decisions.
+A model-neutral browser SDK with **scoped pages, native accessibility snapshots,
+and guarded locators**. Familiar page/locator ergonomics, explicit authority,
+trusted input and honest verification—without depending on Playwright.
 
-One persistent WebSocket, 56 domains, 652 typed wrappers, zero wrapping of what Chrome already does.
-
+```js
+const page = await browser.open('https://example.com', {
+  allowedOrigins: ['https://example.com']
+});
+const snapshot = await page.snapshot();
+const result = await page.getByRole('button', { name: 'Save' }).click({
+  verify: next => next.tree.includes('Saved')
+});
 ```
-  ● agent: wants to click a button
-  │
-  ● known deterministic route: use CDP directly
-  │
-  ● agent writes the CDP call itself        await session.Input.dispatchMouseEvent({...})
-  │                                          await session.DOM.setFileInputFiles({...})
-  ✓ done — same pattern for all 652 methods
-```
 
-**The protocol is the API.** If Chrome can do it, you can call it.
+Raw CDP remains an explicit advanced path: one persistent connection, 56 domains,
+652 typed wrappers. If Chrome can do it, you can still call the protocol directly.
 
 ## Installation
 
@@ -51,55 +52,59 @@ This needs **macOS Accessibility** for the `node` binary running the SDK. If it'
 
 See [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) for recipes on the mechanics that are not obvious from the CDP method list alone.
 
-## Guarded interactions
+## Guarded pages and locators
 
-Prefer the exact deterministic API route when known. At unknown UI decision
-boundaries, default to **guarded observe → act → verify**. Import
-`InteractionController` from `skills/cdp/sdk/interaction.ts`, or use the REPL
-`createInteractionController({ allowedOrigins: ['https://example.com'] })`
-(add `input: 'trusted'` for real mouse and keyboard input).
-Every `observe`, `act` and `waitForChange` requires `{scope:{sessionId}}`; no
-active-tab routing. See the [API and working snippet](skills/cdp/SKILL.md#guarded-interaction-at-unknown-ui-boundaries).
+The REPL exposes `browser`; library callers import `Browser` from
+`skills/cdp/sdk/browser.ts`. Connect, inspect `browser.tabs()`, then explicitly
+`browser.attach(targetId,{allowedOrigins})` or `browser.open(url,{allowedOrigins})`.
+Every Page pins its attachment and connection generation, never an active-tab
+pointer. Exact authorized HTTP(S) origins are required; allowlists are not
+inferred from page content.
 
-Observations offer opaque, single-observation targets (64 default / 128 maximum),
-explicit truncation, ARIA roles and names (including `aria-labelledby`), safe
-control `value` (up to 4096 characters), `checked`/`selected`/`expanded` state and
-native `<select>` options. Sensitive controls are excluded using private markers, autocomplete and
-conservative naming heuristics; this is not general secret detection/DLP. Exact
-bounded identity fingerprints stay in-page; only SHA-256 digests cross CDP
-(requires in-page SubtleCrypto, normally HTTPS/localhost). Actions recheck origin, document/connection, native
-identity, semantics, visibility, enabled state and occlusion. Cosmetic churn and
-layout shifts do not invalidate a target; a change in its meaning does.
-Operations are `click`, `type` (replaces the entire value, maximum 4096
-characters), `select` (a native `<select>` option) and, with `input: 'trusted'`,
-`press` (an allowlisted key). Synthetic mode (the default) activates through the
-DOM; trusted mode sends real CDP mouse, text and key input at the rechecked target,
-which pointer-driven widgets and autocomplete comboboxes need. Names are computed
-from content (a day cell showing "20" is "Tuesday, October 20, 2026"), candidates
-carry the named `context` around them, open shadow roots are included, partly
-covered controls are used at a clear point, and the page and scroll containers
-offer `scroll_down`/`scroll_up`. Iframes, closed shadow roots and canvas remain out
-of scope.
+`page.snapshot()` returns `{tree,diff}` plus identity, URL/title, truncation and
+omission metadata. Native AX projection preserves control values, named
+contexts, table relations and all roots. Snapshots support subtree and frame
+scope, including ownership-checked OOPIFs. Refs and diff history stay with the
+page; there are no public backend-ID maps to assemble.
 
-`executed` means dispatched, not goal achieved. **stale → reobserve; blocked/denied
-→ approval or stop; outcome_unknown → inspect, never blindly retry.** Cancellation
-cannot undo a dispatched effect, and GUI actions are not atomic. `close()` is
-cooperative; unresolved dispatched calls retain the shared scope queue fence
-until settlement. Queues, concurrent waits and retained scopes are bounded, with
-explicit capacity failures rather than unbounded growth. Raw CDP/vision
-helpers remain intentional fallbacks for unsupported mechanics, not permission
-bypasses. Jev is optional; model confidence is never authorization.
+`page.getByRole(role,{name,context})` and `page.locator(cssOrRef)` resolve exactly
+one target. Actions run **observe → revalidate → act once → verify**, default to
+trusted mouse/keyboard input, and perform guarded scroll-into-view when needed.
+Supported methods are `click`, `fill`, `press`, `selectOption` and
+`scrollIntoView`. Value replacement/selection gets automatic read-back; other
+goals use `verify(snapshot)` or an authoritative external check.
 
-Origin allowlists require 1–32 exact origins (maximum 2048 characters each),
-and explicit scope session IDs are bounded to 256 characters. Allowlists are
-enforced on every guarded observation
-and action, including after navigation. They are not a network/navigation firewall
-or a sandbox around raw APIs. Session reconnect preserves its authorized settings
-and selected transport rather than rediscovering a different browser, increments
-a connection generation, and requires scoped callers to reattach.
+**`executed` means dispatched, not goal achieved.** Inspect `verified` and the
+returned evidence. Stale → reobserve; blocked/denied → stop or obtain authority;
+outcome_unknown → inspect, never blindly retry. No ambiguous first-match
+selection, automatic action replay, or raw-input fallback. Timeouts/cancellation
+cannot undo sent input; unresolved calls retain their queue fence.
 
-After updating the SDK, the long-lived daemon needs a user-authorized restart to
-load version **0.14.0** and the new globals. File updates alone do not reload it.
+`page.observe`, `page.act` and `page.waitForChange` expose bounded model-neutral
+observations for Jev or other decision makers. Snapshot refs describe evidence;
+observation handles authorize only revalidated operations. The underlying
+`InteractionController` remains importable and powers the Pi/Fabric provider.
+
+This is not full Playwright compatibility. Frame snapshots are supported, but
+frame actions, closed-shadow-root actions, canvas and unsupported widgets fail
+closed. Sensitive controls are excluded and protected/password-like snapshot
+values are redacted; these are heuristics, not general DLP. Origin policy is not
+a network firewall or a sandbox around raw CDP. See the
+[usage API](skills/cdp/SKILL.md) and
+[operating contract](skills/cdp/interaction-skills/agent-operating-loop.md).
+
+### Breaking migration: 0.17.0
+
+- The AX projection/ref/locator globals and their implementation are removed.
+  Use `page.snapshot()`, `page.locator(ref)` and `page.getByRole()`.
+- Signal/info helpers become `page.signals()` / `page.info()`.
+- The unused learnings registry, controller-factory global and helper help
+  registry are removed; the CLI's `--help` remains.
+- Raw `session`, `cdp(sessionId,method,params)`, typed protocol wrappers, recording
+  and Chrome-extension operations remain available.
+
+After updating, run `browser-harness-js --restart` to load **0.17.0**. This drops
+daemon globals and attachments; reconnect and reattach afterward.
 
 ## Optional Pi / Fabric connector
 
@@ -216,7 +221,9 @@ This repo contains nine skills installable via `npx skills add`:
 - `skills/cdp/sdk/rrweb-replay.html` — player UI for `recordings replay`
 - `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
 - `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
-- `skills/cdp/sdk/helpers.ts` — agent helpers for exactly the "things CDP structurally lacks" carve-out below: `drainSignals()` / `attachSignals()` (drainable signal queue), `pageInfo()` (modal-dialog detection), `resolveLocator()` / `parseAxLocators()` (locator resolution via the accessibility tree), `help()` (per-helper self-documentation), and the per-site recipe registry `listLearnings()` / `learnings(domain, tool, args)` over `skills/cdp/learnings/<domain>/manifest.json`
+- `skills/cdp/sdk/browser.ts` / `page.ts` — scoped Browser/Page/Locator ownership, guarded actions and verification
+- `skills/cdp/sdk/snapshot.ts` — internal CDP-native projection, managed snapshot types and identity-aware diffs
+- `skills/cdp/sdk/page.test.ts` / `page.live.test.ts` / `snapshot.test.ts` — lifecycle, isolated Chrome end-to-end and projection regressions
 - `skills/cdp/interaction-skills/agent-operating-loop.md` — observe → act → verify → return across the semantic / visual / direct-DOM workflows
 - `skills/cdp/interaction-skills/rich-editors.md` — Docs, Sheets, Notion, Figma: when the DOM is a lie about the editable surface
 - `skills/gsearch/SKILL.md` — Google Search skill instructions
@@ -236,7 +243,7 @@ This repo contains nine skills installable via `npx skills add`:
 - `skills/gmaps/SKILL.md` — Google Maps skill instructions (search, directions, optimize)
 - `skills/gmaps/scripts/gmaps` — Google Maps CLI: search + `--route` directions (`--mode` …) + `--optimize` best-effort TSP (a `browser-harness-js` heredoc, no runtime)
 
-Raw protocol calls remain available alongside optional guarded interactions and focused helper recipes.
+Raw protocol calls remain available alongside the default guarded Page/Locator interface.
 
 ## Distribution: cross-agent plugin manifests
 
@@ -259,25 +266,21 @@ when a deterministic route is known or unsupported mechanics require it.
 - No version drift. The SDK is regenerated from the upstream protocol JSON; new Chrome methods appear as soon as you swap the JSON.
 - No "helper doesn't handle my case" detours. If CDP can do it, the agent can call it — directly, typed, today.
 
-Alongside `InteractionController`, focused helpers include:
-- `listPageTargets()` — filters `chrome://` / `devtools://` out of `Target.getTargets`
-- `resolveWsUrl({wsUrl|port|profileDir})` — reads `DevToolsActivePort` for Chrome 144+
-- `session.use(targetId)` / `session.waitFor(method, pred, timeout)` — the two routing primitives you genuinely need
-- `axView(nodes, opts?)` + `axDiff` / `parseAxRefs` / `axClick` / `axType` — compressed accessibility-tree projection (raw `getFullAXTree` is unusable in context; drops ~96% structural noise and keeps refs you can act on; see `interaction-skills/snapshot.md`)
-- `parseAxLocators` / `resolveLocator` / `axClick(locator)` — stable locators (`role` + `accessibleName`) that survive refMap rebuilds where `[n]` refs do not
-- `attachSignals()` / `drainSignals()` — drainable digest of dialogs / downloads / navigations / crashes (CDP fires dozens of events; this keeps the handful that change what to do next)
-- `pageInfo({ timeoutMs? })` — `url` / `title` / viewport via a timed `Runtime.evaluate`; returns `{ dialog }` when a modal blocks page JS instead of silently hanging
-- `help(name?)` — per-helper usage so the model does not need to reload docs to remember an option name
-- `listLearnings()` / `learnings(domain, tool?, args?)` — recipe registry over `skills/cdp/learnings/` so per-site selector chains are not re-derived each call (see `skills/cdp/learnings/README.md`)
+The low-level surface remains available for explicit advanced work:
+- `page.cdp(method, params)` — pinned raw dispatch, invalidating page observations
+- `session.Domain.method(...)` and `cdp(sessionId, method, params)` — typed or explicitly routed protocol calls
+- `session.waitFor(method, predicate, timeout)` — native event synchronization
+- `resolveWsUrl`, `detectBrowsers`, `ext`, recording APIs — connection, Chrome-extension operations and session recording
 
-These optional layers do not remove the raw `session.Domain.method(...)` surface.
-Raw access is an intentional escape hatch, never permission to evade a guard denial.
+Raw access is intentional, never permission to evade a guard denial. Reading,
+refs, locators and normal interactions use the coherent Page surface instead
+of overlapping global helpers.
 
 ## Contributing
 
 PRs welcome. The best way to help: **contribute a new interaction skill** under [skills/cdp/interaction-skills/](skills/cdp/interaction-skills/) when you figure out the CDP recipe for something non-obvious (a dropdown framework, a shadow-DOM trap, a network-wait pattern).
 
-- Keep recipes in **pure CDP** — `session.Domain.method(...)`, not wrapped helpers.
+- Prefer the Page/Locator interface for supported interactions. Label raw CDP recipes as explicit advanced paths, never guard-denial fallbacks.
 - Lead with the shortest method call that works; add the workaround or trap afterwards.
 - Small and focused beats comprehensive. One mechanic per file.
 - Bug fixes, codegen improvements, and `session.ts` refinements are equally welcome.

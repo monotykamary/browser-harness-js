@@ -6,6 +6,10 @@ toolbars, focus traps, hidden textareas, and offscreen iframes — none of
 which represent the user-editable document. Acting on that tree lands
 typing in a search box or hidden input instead of the document.
 
+This is an explicit advanced visual workflow for unsupported surfaces, not a
+way around a denied guarded action. Normal toolbar/dialog controls use
+`page.getByRole(...).fill(...)` or `.click()` with verification.
+
 ## The pattern
 
 For the main editing surface in a rich editor:
@@ -19,7 +23,7 @@ For the main editing surface in a rich editor:
 4. **Verify** the probe lands in the document via another screenshot,
    an export path, or another reliable visual / state check.
 5. **If the probe is elsewhere** (title bar, toolbar search, hidden textarea)
-   STOP using `axView` / DOM helpers for this surface — switch fully to
+   STOP treating snapshot refs / DOM elements as the document — use an authorized
    screenshot-guided mouse + real keyboard.
 6. **Bulk content** only after the probe is verified to land in the right
    place.
@@ -30,16 +34,16 @@ The editor keeps the document in its OWN virtual model. The DOM around it is
 app chrome: toolbars, menus, focus traps (for accessibility compliance),
 caret indicators, hidden textareas for IME
 — none of it maps to the glyph positions the agent wants to type at.
-`axView` will show a `textbox` for the hidden focus-trap input; `axType` will
-fill it; the text vanishes from view.
+A snapshot can show a `textbox` for a focus-trap input without identifying the
+editable document. Even dispatched input is not proof it reached the document.
 
 Toolbar search boxes, title inputs, and dialog fields (NOT inside the
-document body) DO work via the accessibility tree — use `axType(ref, refs,
-text)` for those.
+document body) can work through `page.getByRole('textbox', {name}).fill(text)`.
+Check its receipt and read-back.
 
 ## Traps
 
-- **A clean `axView` doesn't mean the editor is targetable.** It means the
+- **A clean snapshot doesn't mean the editor is targetable.** It means the
   toolbars are. Always probe before bulk content.
 - **After an in-app modal / dialog, refocus the surface with a coordinate
   click** — the focus trap may have changed.

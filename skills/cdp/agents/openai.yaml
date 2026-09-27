@@ -1,5 +1,5 @@
 interface:
   display_name: "browser-harness-js"
-  short_description: "Drive any Chromium browser from JavaScript via CDP"
+  short_description: "Scoped browser snapshots and guarded page/locator actions"
   brand_color: "#000000"
-  default_prompt: "Use $browser-harness-js to drive my browser: connect, pick a tab, snapshot, act via CDP."
+  default_prompt: "Use $browser-harness-js to drive my browser: connect, explicitly scope an authorized tab, snapshot, use guarded locators, and verify the result."

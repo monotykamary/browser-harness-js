@@ -18,13 +18,11 @@ import { bindChrome } from './chrome.ts';
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
 import { asWire, extensionConnected, setExtensionClient } from './extension-hub.ts';
 import { acceptExtensionUpgrade, isExtensionUpgrade } from './ws-server.ts';
-import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
+import { Browser } from './browser.ts';
 import { RecordingManager } from './recording.ts';
-import { InteractionController, type InteractionOptions } from './interaction.ts';
 import * as Generated from './generated.ts';
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { extraHelpers } from './helpers.ts';
 
 // Read once at boot and cache for the process lifetime, so /health reports the
 // version the daemon was *started* with — not the one currently on disk. That
@@ -36,70 +34,16 @@ const session = new Session();
 const recording = new RecordingManager(session);
 (globalThis as any).session = session;
 (globalThis as any).Session = Session;
-(globalThis as any).InteractionController = InteractionController;
-(globalThis as any).createInteractionController = (options: InteractionOptions) => new InteractionController(session, options);
+(globalThis as any).browser = new Browser(session);
 // Bind helpers to the singleton session so the agent calls `listPageTargets()`
 // with no args (no host/port confusion, no /json endpoint assumption).
 (globalThis as any).listPageTargets = () => listPageTargets(session);
 (globalThis as any).ext = bindChrome(session);
 (globalThis as any).resolveWsUrl = resolveWsUrl;
 (globalThis as any).detectBrowsers = detectBrowsers;
-(globalThis as any).axView = axView;
-(globalThis as any).axDiff = axDiff;
-(globalThis as any).parseAxRefs = parseAxRefs;
 (globalThis as any).CDP = Generated;
 (globalThis as any).cdp = (sid: string, method: string, params: unknown) => session._call(method, params, { sessionId: sid });
 
-/** Resolve an axView ref number (or `[n]` string) to backendDOMNodeId via a refs Map or parseAxRefs(view). */
-function resolveAxBackendId(
-  ref: number | string,
-  refs: Map<number, number> | string,
-): number {
-  const n = typeof ref === 'string' ? Number(String(ref).replace(/\[|\]/g, '')) : ref;
-  if (!Number.isFinite(n)) throw new Error(`Invalid ax ref: ${ref}`);
-  const map = typeof refs === 'string' ? parseAxRefs(refs) : refs;
-  const backendNodeId = map.get(n);
-  if (backendNodeId == null) throw new Error(`Unknown ax ref [${n}] — re-snapshot; refs are only valid for one getFullAXTree`);
-  return backendNodeId;
-}
-
-/** Click the center of an axView ref. `refs` is a Map from parseAxRefs or the axView string itself. */
-async function axClick(ref: number | string, refs?: Map<number, number> | string | null): Promise<void> {
-  const backendNodeId = extraHelpers.isLocatorString(ref)
-    ? await extraHelpers.resolveLocator(ref as string)
-    : resolveAxBackendId(ref, (refs as Map<number, number> | string) ?? new Map());
-  const { model } = await session.domains.DOM.getBoxModel({ backendNodeId });
-  const x = model.content[0]!;
-  const y = model.content[1]!;
-  const cx = x + model.width / 2;
-  const cy = y + model.height / 2;
-  await session.domains.Input.dispatchMouseEvent({ type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1 });
-  await session.domains.Input.dispatchMouseEvent({ type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1 });
-}
-
-/** Focus an axView ref (click) then insert text. */
-async function axType(ref: number | string, refs: Map<number, number> | string | null | undefined, text: string): Promise<void> {
-  await axClick(ref, refs ?? undefined);
-  await session.domains.Input.insertText({ text });
-}
-
-(globalThis as any).axClick = axClick;
-(globalThis as any).axType = axType;
-// Agent-facing helpers from helpers.ts — exactly the "things CDP structurally
-// lacks" carve-out from the README ("No helpers file. No click(), no goto()"):
-// a drainable async event queue, modal-dialog detection, locator resolution
-// via the accessibility tree, and a per-site recipe registry. None wrap a
-// CDP method; the agent can still call session.Domain.method(...) for everything.
-(globalThis as any).parseAxLocators = parseAxLocators;
-(globalThis as any).isLocatorString = extraHelpers.isLocatorString;
-(globalThis as any).resolveLocator = extraHelpers.resolveLocator;
-(globalThis as any).attachSignals = extraHelpers.attachSignals;
-(globalThis as any).drainSignals = extraHelpers.drainSignals;
-(globalThis as any).detachSignals = extraHelpers.detachSignals;
-(globalThis as any).pageInfo = extraHelpers.pageInfo;
-(globalThis as any).help = extraHelpers.help;
-(globalThis as any).listLearnings = extraHelpers.listLearnings;
-(globalThis as any).learnings = extraHelpers.learnings;
 (globalThis as any).startRecording = (name?: string, title?: string) => recording.start(name, title);
 (globalThis as any).stopRecording = () => recording.stop();
 (globalThis as any).recordingStatus = () => recording.status();

@@ -84,7 +84,7 @@ const MAX_ELEMENTS = 128;
 const DEFAULT_WAIT_MS = 5000;
 const MAX_WAIT_MS = 60000;
 const WAIT_INTERVAL_MS = 500;
-const OPERATIONS = ['click', 'type', 'select', 'press', 'scroll_down', 'scroll_up'];
+const OPERATIONS = ['click', 'type', 'select', 'press', 'scroll_down', 'scroll_up', 'scroll_into_view'];
 
 /** Keys `press` may send, with the CDP key event fields each needs. */
 export const PRESS_KEYS: Record<string, { code: string; keyCode: number; text?: string }> = {
@@ -166,7 +166,7 @@ export class InteractionController {
   }
 
   async observe(
-    input: { scope: InteractionScope; maxElements?: number },
+    input: { scope: InteractionScope; maxElements?: number; backendNodeId?: number },
     options: Options = {},
   ): Promise<InteractionObservation> {
     const sid = this.scopeId(input.scope);
@@ -175,7 +175,11 @@ export class InteractionController {
       throw new Error('maxElements must be an integer from 1 to 128');
     }
     const signal = this.signal(options);
-    return this.serial(sid, () => this.snapshot(sid, max, signal), signal);
+    const backendNodeId = input.backendNodeId;
+    if (backendNodeId !== undefined && (!Number.isSafeInteger(backendNodeId) || backendNodeId < 1)) {
+      throw new Error('backendNodeId must be a positive safe integer');
+    }
+    return this.serial(sid, () => this.snapshot(sid, max, signal, backendNodeId), signal);
   }
 
   async act(
@@ -410,8 +414,8 @@ export class InteractionController {
     transport.add(pending);
     void pending.then(result => {
       // An aborted evaluate may still allocate a remote guard after snapshot() has unwound.
-      if (method === 'Runtime.evaluate' && signal.aborted) {
-        const objectId = (result as any)?.result?.objectId;
+      if ((method === 'Runtime.evaluate' || method === 'Runtime.callFunctionOn' || method === 'DOM.resolveNode') && signal.aborted) {
+        const objectId = (result as any)?.result?.objectId ?? (result as any)?.object?.objectId;
         if (objectId) this.release(sid, objectId, generation);
       }
     }, () => {}).finally(() => transport.delete(pending));
@@ -443,7 +447,7 @@ export class InteractionController {
     void pending.catch(() => {}).finally(() => this.releases.delete(pending));
   }
 
-  private async snapshot(sid: string, max: number, signal: AbortSignal): Promise<InteractionObservation> {
+  private async snapshot(sid: string, max: number, signal: AbortSignal, backendNodeId?: number): Promise<InteractionObservation> {
     signal.throwIfAborted();
     if ((!this.epochs.has(sid) && this.epochs.size >= MAX_SCOPES) || this.releases.size >= MAX_SCOPES) {
       throw new Error('Interaction retained scope capacity exceeded; invalidate unused scopes');
@@ -453,6 +457,7 @@ export class InteractionController {
     this.epochs.set(sid, epoch);
     const generation = this.session.getConnectionGeneration?.();
     let objectId: string | undefined;
+    let targetObject: string | undefined;
     try {
       await this.call(sid, 'Page.enable', {}, generation, signal);
       if (this.input === 'trusted') {
@@ -465,12 +470,22 @@ export class InteractionController {
         frameId: frame.id,
         worldName: 'browser-harness-guard',
       }, generation, signal);
-      const evaluated = await this.call(sid, 'Runtime.evaluate', {
-        expression: `(${projection})(${JSON.stringify(this.origins)}, ${max}, ${this.input === 'trusted'})`,
-        contextId: world.executionContextId,
-        objectGroup: 'browser-harness-guard',
-        awaitPromise: true,
-      }, generation, signal);
+      if (backendNodeId !== undefined) {
+        const resolved = await this.call(sid, 'DOM.resolveNode', { backendNodeId, executionContextId: world.executionContextId }, generation, signal);
+        targetObject = resolved.object?.objectId;
+        if (!targetObject) throw new Error('Target unavailable');
+      }
+      const evaluated = targetObject
+        ? await this.call(sid, 'Runtime.callFunctionOn', {
+          objectId: targetObject,
+          functionDeclaration: `function(origins, max, trusted) { return (${projection})(origins, max, trusted, this); }`,
+          arguments: [{ value: this.origins }, { value: max }, { value: this.input === 'trusted' }],
+          objectGroup: 'browser-harness-guard', awaitPromise: true,
+        }, generation, signal)
+        : await this.call(sid, 'Runtime.evaluate', {
+          expression: `(${projection})(${JSON.stringify(this.origins)}, ${max}, ${this.input === 'trusted'})`,
+          contextId: world.executionContextId, objectGroup: 'browser-harness-guard', awaitPromise: true,
+        }, generation, signal);
       objectId = evaluated.result?.objectId;
       if (!objectId || evaluated.exceptionDetails) throw new Error('Guard context unavailable');
       const data = this.value(await this.call(sid, 'Runtime.callFunctionOn', {
@@ -515,6 +530,8 @@ export class InteractionController {
       if (objectId) this.release(sid, objectId, generation);
       if (this.epochs.get(sid) === epoch) this.epochs.delete(sid);
       throw error;
+    } finally {
+      if (targetObject) this.release(sid, targetObject, generation);
     }
   }
 }
@@ -565,7 +582,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 // Bounded controls from the document and its open shadow roots, with an explicit role
 // allowlist, plus scrollable regions. Not a complete accessibility tree; trusted input
 // is opt-in and dispatched by the host.
-const projection = String.raw`async function(allowedOrigins, maxElements, trustedInput) {
+const projection = String.raw`async function(allowedOrigins, maxElements, trustedInput, target) {
   const doc = document;
   const url = location.href;
   if (!allowedOrigins.includes(location.origin)) return { snapshot: { denied: true } };
@@ -844,11 +861,12 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     const semantic = semantics(el);
     if (!semantic || !semantic.operations.length || !el.isConnected || el.ownerDocument !== doc) return null;
     const rect = el.getBoundingClientRect();
-    let visible = rect.width > 0 && rect.height > 0 && rect.x + rect.width > 0 && rect.y + rect.height > 0 &&
-      rect.x < innerWidth && rect.y < innerHeight;
+    let rendered = rect.width > 0 && rect.height > 0;
     for (let parent = el; parent; parent = composedParent(parent)) {
-      if (isHidden(parent)) visible = false;
+      if (isHidden(parent)) rendered = false;
     }
+    const visible = rendered && rect.x + rect.width > 0 && rect.y + rect.height > 0 &&
+      rect.x < innerWidth && rect.y < innerHeight;
     // A pointer-events:none control (an accessibility overlay over its row) is reached
     // through its own component: a hit inside its parent counts, a foreign overlay does not.
     const passThrough = getComputedStyle(el).pointerEvents === 'none';
@@ -890,6 +908,12 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     if (fingerprint.length > LIMITS.fingerprint) {
       textTruncated = true;
       return null;
+    }
+    if (target === el && rendered) {
+      // Only scrolling is offered offscreen; typing/clicking still require a fresh
+      // observation and unobstructed hit test after the guarded scroll.
+      const operations = visible ? [...semantic.operations, 'scroll_into_view'] : ['scroll_into_view'];
+      return { semantic: { ...semantic, operations }, visible: true, clear: !visible || clear, enabled, fingerprint, x, y };
     }
     return { semantic, visible, clear, enabled, fingerprint, x, y };
   };
@@ -964,13 +988,15 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     }
     return null;
   };
-  const page = pageState();
+  const page = target ? null : pageState();
   // The page's scroll candidate always fits: it takes the last slot.
   const capacity = page ? maxElements - 1 : maxElements;
   let scanned = 0;
   let elementsTruncated = false;
   let node;
-  while (scanned < LIMITS.scan && (node = nextNode())) {
+  let targetPending = !!target;
+  const next = () => target ? (targetPending ? (targetPending = false, target) : null) : nextNode();
+  while (scanned < LIMITS.scan && (node = next())) {
     scanned++;
     let kind = 'control';
     let current = state(node);
@@ -1042,7 +1068,9 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     const element = ref.element;
     const ready = input => ({ status: 'ready', input, x: current.x, y: current.y });
 
-    if (operation === 'click') {
+    if (operation === 'scroll_into_view' && target === element) {
+      element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    } else if (operation === 'click') {
       if (trusted === true && trustedInput) return ready('click');
       // Synthetic DOM activation, not a trusted pointer event. No scrolling/focus side effects first.
       HTMLElement.prototype.click.call(element);

@@ -50,7 +50,7 @@ on disk → `browser-harness-js --restart` reloads them. Details in
 `skills/cdp/interaction-skills/connection.md` (Stale daemon).
 
 **Bump `"version"` on every change to the `cdp` skill** — SDK code (`repl.ts`,
-`session.ts`, `axview.ts`, `generated.ts`, the `browser-harness-js` launcher)
+`session.ts`, `browser.ts`, `page.ts`, `snapshot.ts`, `generated.ts`, the `browser-harness-js` launcher)
 *or* its docs (`SKILL.md`, `interaction-skills/*`). Without a bump, an
 installed copy has no way to know it's behind. Patch for fixes/docs, minor for
 a new capability. Then restart the daemon so the running process serves the
