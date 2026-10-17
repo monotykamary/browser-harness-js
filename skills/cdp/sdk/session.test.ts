@@ -138,6 +138,15 @@ test('real Session exposes a synchronous generation fence without reconnecting o
   assert.equal(wire.sent.length, 1); assert.equal(replacement.sent.length, 0); session.close();
 });
 
+test('page commands keep the active target session while extension commands route through the browser session', async () => {
+  const session = new Session(); const wire = new FakeWire(); session.adoptExtension(wire);
+  session.setActiveSession('page-session');
+  await session._call('Page.navigate', {});
+  await session._call('Extensions.getExtensions', {});
+  assert.equal(JSON.parse(wire.sent[0]!).sessionId, 'page-session');
+  assert.equal(JSON.parse(wire.sent[1]!).sessionId, undefined); session.close();
+});
+
 test('connect({ transport: "extension" }) fails closed when the extension is absent', async () => {
   resetExtensionHub();
   const session = new Session();

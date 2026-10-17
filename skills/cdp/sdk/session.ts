@@ -508,7 +508,8 @@ export class CdpError extends Error {
 
 /** Browser-level methods never take a sessionId. */
 function isBrowserLevel(method: string): boolean {
-  return method.startsWith('Browser.') || method.startsWith('Target.') || method.startsWith('Chrome.');
+  return method.startsWith('Browser.') || method.startsWith('Target.') || method.startsWith('Chrome.') ||
+    method.startsWith('Extensions.');
 }
 
 /** Best-effort browser name for the Dia-only auto-allow gate. For { profileDir }
