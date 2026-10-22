@@ -53,7 +53,7 @@ for candidate IDs. `page.waitForChange(revision, {waitMs:5000})` returns
 Neither a judge score nor `changed:true` means the task is done.
 
 The underlying `InteractionController` remains importable from
-`sdk/interaction.ts` for the Pi/Fabric provider and custom integrations. It
+`sdk/interaction.ts` for custom integrations. It
 requires explicit `{scope:{sessionId}}` on every call. The page facade defaults
 to trusted input; standalone controllers retain their explicit configuration
 and legacy synthetic default. There is no REPL controller-factory global.

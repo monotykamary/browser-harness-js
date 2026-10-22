@@ -83,7 +83,7 @@ cannot undo sent input; unresolved calls retain their queue fence.
 `page.observe`, `page.act` and `page.waitForChange` expose bounded model-neutral
 observations for Jev or other decision makers. Snapshot refs describe evidence;
 observation handles authorize only revalidated operations. The underlying
-`InteractionController` remains importable and powers the Pi/Fabric provider.
+`InteractionController` remains importable for custom integrations.
 
 This is not full Playwright compatibility. Frame snapshots are supported, but
 frame actions, closed-shadow-root actions, canvas and unsupported widgets fail
@@ -105,76 +105,6 @@ a network firewall or a sandbox around raw CDP. See the
 
 After updating, run `browser-harness-js --restart` to load **0.17.0**. This drops
 daemon globals and attachments; reconnect and reattach afterward.
-
-## Optional Pi / Fabric connector
-
-The normal Pi extension package in [`pi/`](pi/) owns the `browser-harness`
-component and its guarded UI contract. Fabric stays connector-agnostic; it does
-not need a browser-specific loader, core registration or Jev/model integration.
-With Pi and Fabric available, optionally load it for one invocation or install
-it as a local package (commands shown from a sibling checkout):
-
-```bash
-pi -e ../browser-harness-js/pi/extension.ts
-# Or, persist the normal Pi package registration:
-pi install ../browser-harness-js/pi
-```
-
-Pi supplies the `typebox` runtime peer and Pi types. `pi-fabric/protocol` is an
-optional, **type-only** peer: no Fabric implementation is imported at runtime.
-Loading the extension only registers a definition, in either extension load
-order. Configuring it loads the adapter but no SDK modules, processes or sockets.
-Only explicit `browser.connect` loads Session and connects to the configured
-WebSocket (`autoAllow: false`); the interaction module loads on first guarded use.
-Provider close releases its controller and session. This does not use the REPL
-daemon or discover/approve a personal browser.
-
-Use Fabric's existing component control plane (in `fabric_exec`):
-
-```ts
-const definition = await components.describe({ component: "browser-harness" });
-const plan = await components.plan({ entries: [{
-  id: "browser", component: definition.name,
-  config: {
-    modulePath: "/trusted/browser-harness-js/skills/cdp/sdk/session.ts",
-    interactionModulePath: "/trusted/browser-harness-js/skills/cdp/sdk/interaction.ts",
-    wsUrl: "ws://127.0.0.1:9222/devtools/browser/REPLACE_WITH_AUTHORIZED_ENDPOINT",
-    allowedOrigins: ["https://example.com"],
-    allowedMethods: ["Target.attachToTarget"]
-  }
-}] });
-return plan; // Inspect changes/warnings and obtain approval before applying.
-// Later, apply the inspected plan using its original request and revision:
-// await components.apply({ ...plan.request, expectedRevision: plan.revision });
-```
-
-Paths are explicit trusted SDK modules (absolute, or relative to invocation cwd),
-not tied to any sibling layout or bundled inside `pi/`. Required configuration:
-`modulePath`, `wsUrl`, `allowedMethods`. Guarded actions also require
-`interactionModulePath` plus 1–32 exact `allowedOrigins`; optional
-`callTimeoutMs` is 100–60000 (default 10000). `allowedMethods: []` disables raw CDP;
-provide an already-authorized session on this connection, or separately grant
-`Target.attachToTarget` to attach a known authorized target. Raw grants are exact
-method names and **not origin-limited**. No wildcard or implicit origin grants.
-
-Then explicitly call `browser.connect` and use `browser.observe`, `browser.act`
-and `browser.waitForChange` with `{scope:{sessionId}}`. `browser.cdp` exists only
-with raw grants; page-scoped raw calls also require `sessionId`. Receipts and
-cancellation retain the guarded semantics above: unknown outcomes never imply
-rollback or permission to retry. Normal Fabric tool/approval policy still applies.
-
-Before the extension is loaded, the definition is unknown to `components.describe`;
-configured entries stay `waiting` with `component:browser-harness` missing until
-the package is installed **and loaded**. Installing/configuring is not connecting.
-
-Focused offline package tests, from this repository (Node 24+, no SDK suite,
-browser, model or credentials):
-
-```bash
-cd pi
-bun install --ignore-scripts --omit peer  # standalone tests need only dev typebox
-node --test tests/*.test.ts
-```
 
 ## Session recording (rrweb)
 
@@ -207,7 +137,6 @@ This repo contains nine skills installable via `npx skills add`:
 
 ## Files
 
-- `pi/` — optional Pi extension package: lazy `browser-harness` Fabric definition, guarded browser provider, provider-owned UI contract and focused fake-session tests
 - `skills/cdp/SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
 - `skills/cdp/sdk/browser-harness-js` — tiny CLI that auto-spawns the server and forwards snippets
 - `skills/cdp/sdk/repl.ts` — Node HTTP server holding one persistent `Session`
