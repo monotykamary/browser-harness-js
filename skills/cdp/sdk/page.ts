@@ -21,6 +21,7 @@ type Query = { kind: 'ref'; ref: string; epoch: number } | { kind: 'css'; select
 type Frame = SnapshotFrame & { parentId?: string };
 const invalidations = new Set(['Page.frameNavigated', 'Page.navigatedWithinDocument', 'Page.frameDetached',
   'Runtime.executionContextsCleared', 'DOM.documentUpdated', 'Inspector.detached', 'Inspector.targetCrashed']);
+const MAX_FRAMES = 64;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const frameKey = (frame: any) => JSON.stringify([frame.id, frame.loaderId, frame.url]);
 
@@ -147,9 +148,11 @@ export class Page {
       const f = entry.frame;
       if (visited.has(f.id)) return;
       visited.add(f.id);
-      if (visited.size > 32) throw new SnapshotLimitError('Frame count exceeds 32');
+      // Denied frames (cross-origin ads, trackers) are only listed as omissions and never read,
+      // so only readable frames count toward the limit.
       if (!this.allowed(f)) { omissions.push(`frame ${f.id}: origin_denied`); return; }
       if (!f.loaderId) { omissions.push(`frame ${f.id}: not committed`); return; }
+      if (frames.length >= MAX_FRAMES) throw new SnapshotLimitError(`Frame count exceeds ${MAX_FRAMES}`);
       frames.push({ frameId: f.id, sessionId: this.childSessions.get(f.id) ?? sid, key: frameKey(f), url: f.url, parentId: f.parentId });
       for (const child of entry.childFrames ?? []) visit(child, sid);
     };

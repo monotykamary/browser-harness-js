@@ -53,8 +53,10 @@ unrelated iframe targets elsewhere in the browser are not attached. Each
 frame's origin is checked separately. Denied/unavailable frames appear in
 `omissions` and set `truncated:true`, rather than silently disappearing.
 
-Limits include 32 frames, 128 iframe targets examined during discovery, 50,000
-AX nodes per frame and 512 source nesting levels. These are deliberate bounds.
+Limits include 64 readable frames, 128 iframe targets examined during
+discovery, 50,000 AX nodes per frame and 512 source nesting levels. These are
+deliberate bounds. Denied frames (cross-origin ads, trackers) are listed in
+`omissions` but never read, so they do not count toward the frame limit.
 Current subtree/interactive options reduce rendered output, **not the initial
 full-frame AX transfer**. Huge native responses can still hit transport limits;
 use explicit scoped raw AX queries when wire size is the problem.
