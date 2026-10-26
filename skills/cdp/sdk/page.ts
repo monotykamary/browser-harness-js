@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Session } from './session.ts';
 import { InteractionController, type InteractionAction, type InteractionObservation, type InteractionReceipt, type InteractionInput } from './interaction.ts';
-import { renderAX, snapshotDiff, snapshotLimits, nodeIdentity, roleOf, nameOf, SnapshotLimitError,
+import { renderAX, snapshotDiff, snapshotLimits, nodeIdentity, roleOf, nameOf, SnapshotLimitError, MAX_SNAPSHOT_CHARS,
   type AXNode, type SnapshotOptions, type SnapshotFrame, type SnapshotRef, type PageSnapshot } from './snapshot.ts';
 export type { PageSnapshot, SnapshotOptions } from './snapshot.ts';
 
@@ -342,7 +342,9 @@ export class Page {
       if (!node) throw new Error('No accessible target for selector');
       return { frame, backendNodeId, identity: nodeIdentity(node), role: roleOf(node), name: nameOf(node) };
     }
-    const snapshot = await this.snapshotInternal({ frameId: query.frameId }, signal);
+    // Role matching needs the complete scope, not a readable digest: read up to the
+    // documented maximum so large pages resolve instead of failing at the 50,000 default.
+    const snapshot = await this.snapshotInternal({ frameId: query.frameId, maxChars: MAX_SNAPSHOT_CHARS }, signal);
     if (snapshot.truncated) throw new Error('Strict locator requires a complete snapshot; narrow the frame or use a selector');
     const matches = [...this.refs.values()].filter(ref => ref.role === query.role &&
       (query.options.name === undefined || (query.options.exact === false ? ref.name.includes(query.options.name) : ref.name === query.options.name)) &&
