@@ -111,6 +111,11 @@ limits and omitted frames are explicit. Character overflow throws instead of
 returning a silently cut tree. Default limits: 50,000 characters, depth 50, 64
 readable frames (denied cross-origin frames are omitted and not counted). See [snapshot.md](interaction-skills/snapshot.md).
 
+Hidden controls (`display:none`, `visibility`, `opacity:0`, `hidden`, `inert`,
+`aria-hidden`, on themselves or an ancestor) are not actionable. The exception
+is a native checkbox, radio or select made transparent over its own drawn
+proxy: it stays actionable when the hit test lands on it.
+
 Snapshots can read more than the action engine supports. Frame actions, closed
 shadow-root actions, canvas and unsupported custom widgets fail closed; they
 are not silently rerouted. This is a defined page/locator API, **not full

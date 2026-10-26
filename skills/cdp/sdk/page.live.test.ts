@@ -19,12 +19,17 @@ const html = () => `<!doctype html><title>Page ergonomics</title><style>body{fon
 <shadow-box></shadow-box><div style="height:1800px"></div><button id="below" onclick="document.getElementById('status').textContent='Below clicked'">Below fold</button>
 <script>document.getElementById('pointer').addEventListener('pointerdown',()=>document.getElementById('status').textContent='Pointer worked');
 customElements.define('shadow-box',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<button>Shadow button</button>'}});</script>`;
+// Guard shapes from real pages: a native radio made transparent over its drawn ring.
+const shapes = () => `<!doctype html><title>Guard shapes</title><body style="margin:16px;font:14px sans-serif">
+<span style="position:relative;display:inline-flex;width:16px;height:16px"><input type="radio" name="answer" aria-label="No" style="position:absolute;width:16px;height:16px;margin:0;opacity:0"><span style="pointer-events:none;width:14px;height:14px;border:1px solid #888;border-radius:50%"></span></span><span>No</span>
+<button style="opacity:0">Ghost action</button>
+</body>`;
 // A page whose snapshot exceeds the 50,000-character default.
 const large = () => `<!doctype html><title>Catalogue</title>${Array.from({length:1500},(_,i)=>`<p>Catalogue line ${i} with enough words to fill the page</p>`).join('')}
 <p id="state">Basket empty</p><button onclick="document.getElementById('state').textContent='Basket checked out'">Checkout</button>`;
 // Forty opaque-origin ad frames rendered in the page's own process, plus a readable frame.
 const ads = () => `<!doctype html><title>Ads</title><button>Buy</button><iframe src="/child"></iframe>${Array.from({length:40},(_,i)=>`<iframe src="data:text/html,<p>ad ${i}</p>"></iframe>`).join('')}`;
-const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/large': large, '/ads': ads };
+const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/shapes': shapes, '/large': large, '/ads': ads };
 before(async () => {
   server=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((routes[req.url ?? ''] ?? html)());});
   await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
@@ -134,6 +139,17 @@ test('bounded observations remain usable by model-neutral callers; verification 
       assert.equal((await p.page.act(other,{targetId:other.candidates[0]!.id,operation:'click'})).reason,'scope_mismatch');
     }
     finally{await two.close();}
+  }finally{await p.close();}
+});
+
+test('a transparent native radio over its drawn ring takes a real click; a transparent button is refused',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/shapes');try{
+    const radio=await p.page.getByRole('radio',{name:'No'}).click();
+    assert.equal(radio.status,'executed',JSON.stringify(radio));
+    assert.match(radio.snapshot!.tree,/radio "No".*\[checked=true\]/);
+    const ghost=await p.page.getByRole('button',{name:'Ghost action'}).click();
+    assert.equal(ghost.status,'blocked',JSON.stringify(ghost));
   }finally{await p.close();}
 });
 
