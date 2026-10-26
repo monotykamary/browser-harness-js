@@ -108,8 +108,8 @@ reuse old refs. Fresh role/CSS locators resolve anew.
 Diffs are managed per matching snapshot scope and ignore printed ref churn. The
 first diff is the full tree; unchanged content returns `(no changes)`. Depth
 limits and omitted frames are explicit. Character overflow throws instead of
-returning a silently cut tree. Default limits: 50,000 characters, depth 50, 32
-frames. See [snapshot.md](interaction-skills/snapshot.md).
+returning a silently cut tree. Default limits: 50,000 characters, depth 50, 64
+readable frames (denied cross-origin frames are omitted and not counted). See [snapshot.md](interaction-skills/snapshot.md).
 
 Snapshots can read more than the action engine supports. Frame actions, closed
 shadow-root actions, canvas and unsupported custom widgets fail closed; they

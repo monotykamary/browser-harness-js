@@ -16,6 +16,7 @@ class Transport {
   url = `${origin}/`;
   redirect?: string;
   iframe = false;
+  children: {id:string;loaderId:string;url:string}[] = [];
   calls: {method:string;params:any;sid?:string}[] = [];
   listeners = new Set<(method:string, params:any, sid?:string)=>void>();
   before?: (method:string, params:any)=>Promise<void> | void;
@@ -36,7 +37,8 @@ class Transport {
       case 'Target.closeTarget': this.emit('Target.detachedFromTarget', {sessionId:'main'}); return {success:true};
       case 'Target.getTargets': return {targetInfos:this.iframe ? [{type:'iframe',targetId:'child',url:`${origin}/child`}] : []};
       case 'DOM.getFrameOwner': return {backendNodeId:8};
-      case 'Page.getFrameTree': return {frameTree:{frame:{id:'frame',loaderId:'loader',url:this.url}}};
+      case 'Page.getFrameTree': return {frameTree:{frame:{id:'frame',loaderId:'loader',url:this.url},
+        childFrames:options.sessionId === 'main' ? this.children.map(frame => ({frame:{...frame,parentId:'frame'}})) : []}};
       case 'Page.enable': case 'Page.setLifecycleEventsEnabled': return {};
       case 'Page.navigate':
         this.url = this.redirect ?? params.url;
@@ -136,4 +138,18 @@ test('browser open cleans up denied redirects; late attachment cannot survive a 
   await assert.rejects(browser.attach('tab',{allowedOrigins:[origin]}),/disconnected/);
   assert.equal(transport.calls.filter(c=>c.method==='Page.enable').length,before);
   assert.equal(transport.listeners.size,0);browser.disconnect();
+});
+
+test('denied frames are omitted without counting toward the readable frame limit', async () => {
+  const {transport,page}=setup();
+  // Cross-origin ads and trackers: listed as omissions, never read, never counted.
+  transport.children=Array.from({length:40},(_,i)=>({id:`ad${i}`,loaderId:`ad-loader${i}`,url:`https://ads.denied.test/${i}`}));
+  const shot=await page.snapshot();
+  assert.equal(shot.omissions.filter(o=>o.endsWith('origin_denied')).length,40);
+  assert.equal(shot.truncated,true);
+  transport.children=Array.from({length:64},(_,i)=>({id:`own${i}`,loaderId:`own-loader${i}`,url:`${origin}/frame${i}`}));
+  await assert.rejects(page.snapshot(),/Frame count exceeds 64/);
+  transport.children.pop();
+  assert.equal((await page.frames()).frames.length,64);
+  page.dispose();
 });

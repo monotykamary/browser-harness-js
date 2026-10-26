@@ -19,8 +19,11 @@ const html = () => `<!doctype html><title>Page ergonomics</title><style>body{fon
 <shadow-box></shadow-box><div style="height:1800px"></div><button id="below" onclick="document.getElementById('status').textContent='Below clicked'">Below fold</button>
 <script>document.getElementById('pointer').addEventListener('pointerdown',()=>document.getElementById('status').textContent='Pointer worked');
 customElements.define('shadow-box',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<button>Shadow button</button>'}});</script>`;
+// Forty opaque-origin ad frames rendered in the page's own process, plus a readable frame.
+const ads = () => `<!doctype html><title>Ads</title><button>Buy</button><iframe src="/child"></iframe>${Array.from({length:40},(_,i)=>`<iframe src="data:text/html,<p>ad ${i}</p>"></iframe>`).join('')}`;
+const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/ads': ads };
 before(async () => {
-  server=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(req.url==='/child'?'<title>Child</title><button>Child button</button>':html());});
+  server=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((routes[req.url ?? ''] ?? html)());});
   await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
   const httpPort=(server.address() as {port:number}).port;
   origin=`http://127.0.0.1:${httpPort}`;crossOrigin=`http://localhost:${httpPort}`;
@@ -37,9 +40,9 @@ after(async()=>{
   await new Promise<void>(r=>server.close(()=>r()));
   if(profile)rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 });
-async function open(origins = [origin,crossOrigin]) {
+async function open(origins = [origin,crossOrigin], path = '') {
   const browser=new Browser();await browser.connect({port});
-  const page=await browser.open(origin,{allowedOrigins:origins,timeoutMs:15000});
+  const page=await browser.open(origin+path,{allowedOrigins:origins,timeoutMs:15000});
   return {browser,page,close:async()=>{await page.close();browser.disconnect();}};
 }
 const refFor=(snapshot:PageSnapshot,label:string)=>{
@@ -117,5 +120,14 @@ test('bounded observations remain usable by model-neutral callers; verification 
       assert.equal((await p.page.act(other,{targetId:other.candidates[0]!.id,operation:'click'})).reason,'scope_mismatch');
     }
     finally{await two.close();}
+  }finally{await p.close();}
+});
+
+test('denied ad frames are omitted without counting toward the frame limit',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/ads');try{
+    const shot=await p.page.snapshot();
+    assert.equal(shot.omissions.filter(o=>o.endsWith('origin_denied')).length,40,JSON.stringify(shot.omissions));
+    assert.match(shot.tree,/button "Buy"/);assert.match(shot.tree,/button "Child button"/);
   }finally{await p.close();}
 });
