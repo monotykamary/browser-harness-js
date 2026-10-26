@@ -118,6 +118,16 @@ Playwright compatibility**: no selector DSL, nth-match fallback, auto-wait/retry
 loop, or arbitrary rich-editor fill. Sensitive controls are excluded by the
 guard and protected/password-like AX values are redacted; this is not DLP.
 
+A host acting on its own application with its own authority (a test runner
+filling a login form) can grant sensitive fields explicitly:
+`browser.attach(id, {allowedOrigins, allowSensitive: true})` (also on
+`browser.open`). Password, e-mail, phone, name, card and `data-private` /
+`data-sensitive` fields are then offered, filled and read back in observations
+like other controls; snapshot redaction stays on. Only the host grants this,
+never page content or a model's judgment. Embedding hosts may set
+`BH_ALLOW_SENSITIVE=1` instead (read at each observation when the option is
+omitted); the daemon only sees it if it was started with it.
+
 ## Bounded decisions, including Jev
 
 ```js

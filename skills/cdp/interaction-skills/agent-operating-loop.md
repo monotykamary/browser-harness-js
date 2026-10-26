@@ -90,7 +90,13 @@ and reconnect expire refs/handles; reattach after reconnect.
   and unsupported widgets fail closed. Snapshot frame reading is supported.
 - Sensitive controls are excluded by private markers, autocomplete and
   conservative name/id/label checks. Snapshot redaction is separate. Neither
-  layer is general secret detection/DLP. Exact identity hashes require in-page
+  layer is general secret detection/DLP. A host acting with its own authority
+  (a test runner on the application under test) may grant them with
+  `allowSensitive: true` (or `BH_ALLOW_SENSITIVE=1` in the host process when
+  the option is omitted): password, e-mail, phone and marked fields become
+  ordinary candidates whose values appear in observations, so redacting kept
+  evidence becomes the host's job. Snapshot redaction is unchanged. The grant
+  comes from the host, never from page content or a model. Exact identity hashes require in-page
   SubtleCrypto (normally HTTPS/localhost).
 - Page work is serialized; guarded effects also share a transport/scope fence
   across controllers. Independently attached aliases are not a browser-wide

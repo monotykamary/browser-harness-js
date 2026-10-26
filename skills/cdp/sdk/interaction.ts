@@ -52,7 +52,19 @@ export type InteractionReceipt = {
  * pointer or key events require, and enables `press` and contenteditable typing.
  */
 export type InteractionInput = 'synthetic' | 'trusted';
-export type InteractionOptions = { allowedOrigins: string[]; input?: InteractionInput };
+export type InteractionOptions = {
+  allowedOrigins: string[];
+  input?: InteractionInput;
+  /**
+   * Host grant for credential and personal-data fields (passwords, e-mail, phone, names,
+   * card numbers, `data-private` / `data-sensitive` markers). Excluded by default. A test
+   * runner acting on the application under test with the host's authority sets it so those
+   * fields are offered, typed into and read back like any other control; redacting the
+   * evidence it keeps then becomes the host's job. When omitted, `BH_ALLOW_SENSITIVE=1` in
+   * the host process grants it, read at each observation.
+   */
+  allowSensitive?: boolean;
+};
 
 type Options = { signal?: AbortSignal };
 type RecordState = {
@@ -109,6 +121,7 @@ export class InteractionController {
   private readonly session: InteractionSession;
   private readonly origins: string[];
   private readonly input: InteractionInput;
+  private readonly allowSensitive?: boolean;
   private readonly records = new Map<string, RecordState>();
   private readonly epochs = new Map<string, symbol>();
   private readonly queues: Map<string, ScopeQueue>;
@@ -133,6 +146,10 @@ export class InteractionController {
     const input = options.input ?? 'synthetic';
     if (input !== 'synthetic' && input !== 'trusted') throw new Error("input must be 'synthetic' or 'trusted'");
     this.input = input;
+    if (options.allowSensitive !== undefined && typeof options.allowSensitive !== 'boolean') {
+      throw new Error('allowSensitive must be a boolean');
+    }
+    this.allowSensitive = options.allowSensitive;
     this.session = session;
     this.queues = scopeQueues.get(session) ?? new Map();
     scopeQueues.set(session, this.queues);
@@ -382,6 +399,11 @@ export class InteractionController {
     return abortable(next, signal);
   }
 
+  /** An explicit option wins; otherwise the host's environment, read now rather than at construction. */
+  private sensitiveGranted(): boolean {
+    return this.allowSensitive ?? process.env.BH_ALLOW_SENSITIVE === '1';
+  }
+
   private allowed(url: string): boolean {
     try {
       return this.origins.includes(new URL(url).origin);
@@ -475,15 +497,16 @@ export class InteractionController {
         targetObject = resolved.object?.objectId;
         if (!targetObject) throw new Error('Target unavailable');
       }
+      const sensitive = this.sensitiveGranted();
       const evaluated = targetObject
         ? await this.call(sid, 'Runtime.callFunctionOn', {
           objectId: targetObject,
-          functionDeclaration: `function(origins, max, trusted) { return (${projection})(origins, max, trusted, this); }`,
-          arguments: [{ value: this.origins }, { value: max }, { value: this.input === 'trusted' }],
+          functionDeclaration: `function(origins, max, trusted, sensitive) { return (${projection})(origins, max, trusted, sensitive, this); }`,
+          arguments: [{ value: this.origins }, { value: max }, { value: this.input === 'trusted' }, { value: sensitive }],
           objectGroup: 'browser-harness-guard', awaitPromise: true,
         }, generation, signal)
         : await this.call(sid, 'Runtime.evaluate', {
-          expression: `(${projection})(${JSON.stringify(this.origins)}, ${max}, ${this.input === 'trusted'})`,
+          expression: `(${projection})(${JSON.stringify(this.origins)}, ${max}, ${this.input === 'trusted'}, ${sensitive})`,
           contextId: world.executionContextId, objectGroup: 'browser-harness-guard', awaitPromise: true,
         }, generation, signal);
       objectId = evaluated.result?.objectId;
@@ -581,8 +604,8 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 // Runs in a CDP isolated world: page-defined prototypes cannot replace these guards.
 // Bounded controls from the document and its open shadow roots, with an explicit role
 // allowlist, plus scrollable regions. Not a complete accessibility tree; trusted input
-// is opt-in and dispatched by the host.
-const projection = String.raw`async function(allowedOrigins, maxElements, trustedInput, target) {
+// and sensitive fields are opt-in host grants.
+const projection = String.raw`async function(allowedOrigins, maxElements, trustedInput, allowSensitive, target) {
   const doc = document;
   const url = location.href;
   if (!allowedOrigins.includes(location.origin)) return { snapshot: { denied: true } };
@@ -597,7 +620,10 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   const TEXT_ROLES = ['textbox', 'searchbox', 'combobox'];
   const CHECKED_ROLES = ['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio'];
   const SELECTED_ROLES = ['option', 'tab', 'treeitem'];
-  const TEXT_INPUT_TYPES = ['text', 'search', 'url', 'number'];
+  // Password, e-mail and phone inputs are text fields too, offered only under the host's sensitive grant.
+  const TEXT_INPUT_TYPES = allowSensitive
+    ? ['text', 'search', 'url', 'number', 'password', 'email', 'tel']
+    : ['text', 'search', 'url', 'number'];
   const IDENTITY_ATTRIBUTES = ['id', 'name', 'type', 'href', 'role', 'for', 'form', 'action'];
   const BUTTON_INPUT_TYPES = ['button', 'submit', 'reset', 'checkbox', 'radio'];
   const GROUP_ROLES = ['dialog', 'alertdialog', 'grid', 'group', 'listbox', 'menu', 'menubar', 'tablist',
@@ -669,7 +695,9 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   };
 
   const sensitiveName = /pass(?:word|code|phrase)?|secret|token|api[\s_-]*key|auth|credential|security|user[\s_-]*name|login|full[\s_-]*name|first[\s_-]*name|last[\s_-]*name|surname|otp|one[\s_-]*time|mfa|2fa|\bpin\b|ssn|social[\s_-]*security|credit|card|cvv|cvc|iban|routing|account|bank|birth|\bdob\b|e[\s_-]*mail|phone|\btel\b|mobile|address|postal|zip/i;
+  // Without the host's grant, credential and personal-data fields are never offered.
   const secure = el => {
+    if (allowSensitive) return false;
     if (el.type === 'password' || el.hasAttribute('data-private') || el.hasAttribute('data-sensitive')) return true;
     const autocomplete = el.getAttribute('autocomplete') || '';
     if (tooLong(autocomplete, LIMITS.text)) return true;
@@ -688,6 +716,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     }
     return false;
   };
+  const privateMarked = el => !allowSensitive && !!closestComposed(el, '[data-private], [data-sensitive]');
 
   // Native semantics: the implicit role and how the element is operated.
   const native = el => {
@@ -789,7 +818,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   };
 
   const semantics = el => {
-    if (!(el instanceof HTMLElement) || secure(el) || closestComposed(el, '[data-private], [data-sensitive]')) return null;
+    if (!(el instanceof HTMLElement) || secure(el) || privateMarked(el)) return null;
     const described = roleOf(el);
     if (!described) return null;
     const { role, kind } = described;
@@ -949,7 +978,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     if (referenced === null) return null;
     const name = (referenced || el.getAttribute('aria-label') || '').trim();
     if (!name && !SCROLL_ROLES.includes(role)) return null;
-    if (tooLong(name, LIMITS.text) || closestComposed(el, '[data-private], [data-sensitive]')) return null;
+    if (tooLong(name, LIMITS.text) || privateMarked(el)) return null;
     const rect = el.getBoundingClientRect();
     const x = rect.x + rect.width / 2;
     const y = rect.y + rect.height / 2;

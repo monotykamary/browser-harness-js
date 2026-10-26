@@ -88,7 +88,11 @@ observation handles authorize only revalidated operations. The underlying
 This is not full Playwright compatibility. Frame snapshots are supported, but
 frame actions, closed-shadow-root actions, canvas and unsupported widgets fail
 closed. Sensitive controls are excluded and protected/password-like snapshot
-values are redacted; these are heuristics, not general DLP. Origin policy is not
+values are redacted; these are heuristics, not general DLP. A host acting with
+its own authority on the application under test (a test runner) can opt in to
+operating them with `allowSensitive: true` on `attach`/`open`, or
+`BH_ALLOW_SENSITIVE=1` in the host process when the option is omitted; the
+default is unchanged and snapshot redaction stays on. Origin policy is not
 a network firewall or a sandbox around raw CDP. See the
 [usage API](skills/cdp/SKILL.md) and
 [operating contract](skills/cdp/interaction-skills/agent-operating-loop.md).

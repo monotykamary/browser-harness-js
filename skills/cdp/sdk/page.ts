@@ -5,7 +5,11 @@ import { renderAX, snapshotDiff, snapshotLimits, nodeIdentity, roleOf, nameOf, S
   type AXNode, type SnapshotOptions, type SnapshotFrame, type SnapshotRef, type PageSnapshot } from './snapshot.ts';
 export type { PageSnapshot, SnapshotOptions } from './snapshot.ts';
 
-export type PageOptions = { sessionId: string; targetId?: string; allowedOrigins: string[]; input?: InteractionInput; timeoutMs?: number; ownsAttachment?: boolean };
+export type PageOptions = {
+  sessionId: string; targetId?: string; allowedOrigins: string[]; input?: InteractionInput; timeoutMs?: number; ownsAttachment?: boolean;
+  /** Host grant for credential and personal-data fields; see InteractionOptions.allowSensitive. */
+  allowSensitive?: boolean;
+};
 export type CallOptions = { signal?: AbortSignal; timeoutMs?: number };
 export type ActionOptions = CallOptions & { verify?: (snapshot: PageSnapshot) => boolean };
 export type ActionResult = InteractionReceipt & {
@@ -52,7 +56,7 @@ export class Page {
 
   constructor(session: Session, options: PageOptions) {
     if (!options?.sessionId || options.sessionId.length > 256) throw new Error('Page requires an explicit sessionId');
-    this.guard = new InteractionController(session, { allowedOrigins: options.allowedOrigins, input: options.input ?? 'trusted' });
+    this.guard = new InteractionController(session, { allowedOrigins: options.allowedOrigins, input: options.input ?? 'trusted', allowSensitive: options.allowSensitive });
     this.timeoutMs = options.timeoutMs ?? 10_000;
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 60_000) {
       this.guard.close(); throw new Error('timeoutMs must be 1..60000');
