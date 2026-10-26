@@ -85,6 +85,14 @@ and reconnect expire refs/handles; reattach after reconnect.
 - An offscreen supported target may be scrolled once through a guarded
   `scroll_into_view` action, followed by fresh observation and identity checks.
   Ordinary bounded observations also offer page/container scroll operations.
+- A control is offered only when it is enabled, rendered, in the viewport (or
+  offered a guarded scroll) and its hit test lands on it. Rendered means no
+  `display:none`, `visibility`, `opacity:0`, `hidden`, `inert` or
+  `aria-hidden`, on itself or any ancestor. One exception: a native checkbox,
+  radio or select whose only hidden reason is its own `opacity:0`, laid over a
+  drawn proxy (a styled ring or box with `pointer-events:none`), stays a
+  candidate because that is what a user's click reaches; the hit test must
+  still land on it. A transparent button or link stays hidden.
 - Open shadow roots and supported native/ARIA controls are included. AX reading
   is broader than guarded actions: frame actions, closed shadow roots, canvas
   and unsupported widgets fail closed. Snapshot frame reading is supported.

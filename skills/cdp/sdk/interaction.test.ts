@@ -655,3 +655,28 @@ test('sensitive fields stay excluded by default; an explicit host grant makes th
   }
   assert.throws(() => new InteractionController(new FixtureSession(), { allowedOrigins: ['https://allowed.test'], allowSensitive: 'yes' as any }), /allowSensitive must be a boolean/);
 });
+
+test('a transparent native radio, checkbox or select over its drawn proxy stays operable; a transparent button does not', async () => {
+  const { controller, page } = setup();
+  const transparent = <T extends ElementFixture>(el: T, label: string) => { el.attrs['aria-label'] = label; el.style.opacity = '0'; return el; };
+  const radio = transparent(new InputFixture('radio'), 'No');
+  const checkbox = transparent(new InputFixture('checkbox'), 'Remember me');
+  const select = transparent(new ElementFixture('SELECT', ''), 'Country');
+  const button = transparent(new ElementFixture('BUTTON', 'Ghost action'), 'Ghost action');
+  // Only its own opacity is excused: covered, hidden by an ancestor or hidden another way still hides it.
+  const covered = transparent(new InputFixture('radio'), 'Covered'); covered.hit = false;
+  const inHidden = transparent(new InputFixture('radio'), 'In hidden group');
+  inHidden.parentElement = new ElementFixture('DIV'); inHidden.parentElement.style.opacity = '0';
+  const ariaHidden = transparent(new InputFixture('checkbox'), 'Aria hidden'); ariaHidden.attrs['aria-hidden'] = 'true';
+  const invisible = transparent(new InputFixture('checkbox'), 'Invisible'); invisible.style.visibility = 'hidden';
+  page.nodes = [radio, checkbox, select, button, covered, inHidden, ariaHidden, invisible]; page.refreshNodes();
+  const seen = await controller.observe({ scope });
+  assert.deepEqual(seen.candidates.map(c => [c.role, c.label]), [['radio', 'No'], ['checkbox', 'Remember me'], ['combobox', 'Country']]);
+  assert.equal((await controller.act(action(seen, 0))).status, 'executed');
+  assert.equal(radio.clicks, 1);
+  // The proxy now intercepts the pointer: the effect boundary rechecks the hit and refuses.
+  const again = await controller.observe({ scope }); radio.hit = false;
+  assert.equal((await controller.act(action(again, 0))).status, 'blocked');
+  assert.equal(radio.clicks, 1);
+  controller.close();
+});

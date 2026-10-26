@@ -886,13 +886,25 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
       element.hidden || element.inert || element.getAttribute('aria-hidden') === 'true';
   };
 
+  // A native checkbox, radio or select made fully transparent and laid over its own drawn
+  // proxy (a styled ring or box with pointer-events:none) is what a user's click reaches.
+  // Only its own opacity is excused: any other hidden reason, or a hidden ancestor, still
+  // hides it, and the hit test must still land on it. Other transparent controls stay hidden.
+  const transparentNative = el => {
+    const native = (el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type)) || el.tagName === 'SELECT';
+    if (!native) return false;
+    const style = getComputedStyle(el);
+    return Number(style.opacity) === 0 && style.display !== 'none' && style.visibility === 'visible' &&
+      !el.hidden && !el.inert && el.getAttribute('aria-hidden') !== 'true';
+  };
+
   const state = el => {
     const semantic = semantics(el);
     if (!semantic || !semantic.operations.length || !el.isConnected || el.ownerDocument !== doc) return null;
     const rect = el.getBoundingClientRect();
     let rendered = rect.width > 0 && rect.height > 0;
     for (let parent = el; parent; parent = composedParent(parent)) {
-      if (isHidden(parent)) rendered = false;
+      if (isHidden(parent) && !(parent === el && transparentNative(el))) rendered = false;
     }
     const visible = rendered && rect.x + rect.width > 0 && rect.y + rect.height > 0 &&
       rect.x < innerWidth && rect.y < innerHeight;
