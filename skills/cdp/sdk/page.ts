@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Session } from './session.ts';
 import { InteractionController, type InteractionAction, type InteractionObservation, type InteractionReceipt, type InteractionInput } from './interaction.ts';
-import { renderAX, snapshotDiff, snapshotLimits, nodeIdentity, roleOf, nameOf, SnapshotLimitError, MAX_SNAPSHOT_CHARS,
+import { renderAX, snapshotDiff, snapshotLimits, nodeIdentity, roleOf, nameOf, SnapshotLimitError, MAX_SNAPSHOT_CHARS, MISSING_SUBTREE,
   type AXNode, type SnapshotOptions, type SnapshotFrame, type SnapshotRef, type PageSnapshot } from './snapshot.ts';
 export type { PageSnapshot, SnapshotOptions } from './snapshot.ts';
 
@@ -27,6 +27,9 @@ const invalidations = new Set(['Page.frameNavigated', 'Page.navigatedWithinDocum
   'Runtime.executionContextsCleared', 'DOM.documentUpdated', 'Inspector.detached', 'Inspector.targetCrashed']);
 const MAX_FRAMES = 64;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** The blocked reason when the guard offers no candidate: a stable code, then why and the next move. */
+const refusal = (seen: InteractionObservation) => 'not_interactable_or_unsupported' +
+  (seen.truncated ? ': observation truncated' : seen.refusal ? `: ${seen.refusal}` : '');
 const frameKey = (frame: any) => JSON.stringify([frame.id, frame.loaderId, frame.url]);
 
 /** Scope-bound page. No method reads or changes Session's mutable active-target pointer. */
@@ -334,7 +337,10 @@ export class Page {
       return ref;
     }
     if (query.kind === 'css') {
-      await this.snapshotInternal({ selector: query.selector, frameId: query.frameId }, signal);
+      // An element outside the accessibility tree has no subtree to read; it is diagnosed below.
+      let unread: unknown;
+      await this.snapshotInternal({ selector: query.selector, frameId: query.frameId }, signal)
+        .catch(error => { if (message(error) !== MISSING_SUBTREE) throw error; unread = error; });
       // The scoped tree's root may be an ignored wrapper; resolve the CSS identity
       // again rather than choosing an arbitrary descendant control.
       const { frames } = await this.framesInternal(signal);
@@ -343,7 +349,14 @@ export class Page {
       const backendNodeId = await this.selectorNode(query.selector, frame, signal);
       const nodes = await this.frameNodes(frame, signal);
       const node = nodes.find(n => n.backendDOMNodeId === backendNodeId && !n.ignored);
-      if (!node) throw new Error('No accessible target for selector');
+      if (!node) {
+        // Outside the accessibility tree (aria-hidden, presentational): let the guard say why.
+        const why = frame.frameId === frames[0]!.frameId
+          ? await this.guard.observe({ scope: this.scope, backendNodeId }, { signal }).then(seen => seen.refusal, () => undefined)
+          : undefined;
+        throw new Error(why ? `No accessible target for selector: ${why}` : 'No accessible target for selector');
+      }
+      if (unread) throw unread;
       return { frame, backendNodeId, identity: nodeIdentity(node), role: roleOf(node), name: nameOf(node) };
     }
     // Role matching needs the complete scope, not a readable digest: read up to the
@@ -383,15 +396,16 @@ export class Page {
       const observe = () => this.guard.observe({ scope: this.scope, backendNodeId: ref.backendNodeId }, { signal });
       let seen = await observe();
       let candidate = seen.candidates[0];
-      if (!candidate || seen.truncated) return { status: 'blocked', reason: 'not_interactable_or_unsupported', verified: null };
+      if (!candidate || seen.truncated) return { status: 'blocked', reason: refusal(seen), verified: null };
       if (operation !== 'scroll_into_view' && candidate.operations.length === 1 && candidate.operations[0] === 'scroll_into_view') {
         attempted = true;
         const scroll = await this.guard.act({ scope: this.scope, observationId: seen.observationId, action: { targetId: candidate.id, operation: 'scroll_into_view' } }, { signal });
         if (scroll.status !== 'executed') return { ...scroll, verified: null };
         await this.currentTarget(ref, signal);
         seen = await observe(); candidate = seen.candidates[0];
+        if (!candidate) return { status: 'blocked', reason: refusal(seen), verified: null };
       }
-      if (!candidate || !candidate.operations.includes(operation)) return { status: 'blocked', reason: 'unsupported_action', verified: null };
+      if (!candidate.operations.includes(operation)) return { status: 'blocked', reason: 'unsupported_action', verified: null };
       const action: InteractionAction = { targetId: candidate.id, operation };
       let expected: string | undefined;
       if (operation === 'type') { action.text = String(payload); expected = action.text; }

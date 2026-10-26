@@ -30,6 +30,11 @@ export type InteractionObservation = {
   title: string;
   truncated: boolean;
   truncation: { elements: boolean; scan: boolean; text: boolean };
+  /**
+   * Single-target observations only: why the requested target was not offered, and the
+   * next move. Diagnosis only; it never makes the target actionable.
+   */
+  refusal?: string;
 };
 export type InteractionAction = {
   targetId: string;
@@ -538,6 +543,7 @@ export class InteractionController {
         truncated: data.truncated,
         truncation: data.truncation,
       };
+      if (typeof data.refusal === 'string') observation.refusal = data.refusal;
       this.records.set(sid, {
         objectId,
         epoch,
@@ -1054,6 +1060,58 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   }
   if (page && page.semantic.operations.length) refs.push({ element: scroller, kind: 'page', initial: page });
   const truncation = { elements: elementsTruncated, scan: scanned === LIMITS.scan, text: textTruncated };
+
+  // Why a requested target is not offered, and the next move. Diagnosis only: it re-reads the
+  // predicates above, after truncation is settled, and never makes anything actionable.
+  const describe = node => {
+    const id = node.getAttribute && node.getAttribute('id');
+    const text = privateMarked(node) ? '' : (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    return String(node.tagName || 'node').toLowerCase() + (id ? '#' + id.slice(0, 64) : '') + (text ? ' ' + JSON.stringify(text) : '');
+  };
+  const explain = el => {
+    if (!el || typeof el.matches !== 'function' || typeof el.getBoundingClientRect !== 'function') {
+      return 'not an operable control; act on the control itself (by role, label or ref)';
+    }
+    const element = el instanceof HTMLElement;
+    if (element && (secure(el) || privateMarked(el))) {
+      return 'sensitive: its name, autocomplete or markers look like credential or personal data, which the guard ' +
+        "operates only under the host's allowSensitive grant";
+    }
+    if (el.matches(':disabled') || closestComposed(el, '[aria-disabled="true"]')) {
+      return 'disabled; check that this is the expected state, or do what enables it first';
+    }
+    let ariaHidden = null;
+    for (let node = el; node; node = composedParent(node)) {
+      const style = getComputedStyle(node);
+      const hidden = style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 || node.hidden || node.inert;
+      if (hidden && !(node === el && transparentNative(el))) {
+        return 'hidden (' + (node === el ? 'itself' : 'by ancestor ' + describe(node)) + '); open or reveal what contains it first';
+      }
+      if (!ariaHidden && node.getAttribute('aria-hidden') === 'true') ariaHidden = node;
+    }
+    const rect = el.getBoundingClientRect();
+    const x = rect.x + rect.width / 2;
+    const y = rect.y + rect.height / 2;
+    const sized = rect.width > 0 && rect.height > 0;
+    if (ariaHidden && sized) {
+      return 'pointer-only: visible, but hidden from the accessibility tree (aria-hidden on ' +
+        (ariaHidden === el ? 'itself' : describe(ariaHidden)) + '), so the guard cannot act on it; a user would click it at ' +
+        '{x:' + Math.round(x) + ',y:' + Math.round(y) + '}, which only an authorized coordinate click can do';
+    }
+    if (!sized) return 'it has no size on the page';
+    if (rect.x + rect.width <= 0 || rect.y + rect.height <= 0 || rect.x >= innerWidth || rect.y >= innerHeight) {
+      return 'outside the viewport; scroll it into view, then retry';
+    }
+    const hit = deepHit(x, y);
+    if (hit && hit !== el && !composedContains(el, hit) && !composedContains(hit, el)) {
+      return 'covered at its centre by ' + describe(hit) + '; close or move what covers it, then retry';
+    }
+    const semantic = element ? semantics(el) : null;
+    if (semantic && !semantic.operations.length) return 'read-only; it offers no operation';
+    const role = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
+    return 'not an operable control (' + String(el.tagName || 'node').toLowerCase() + (role ? ' role=' + role.slice(0, 32) : '') +
+      '); act on the control itself (by role, label or ref)';
+  };
   // Only SHA-256 digests cross CDP (at most 128 * 64 characters); raw attributes stay in-page.
   // Fail closed when SubtleCrypto is unavailable (e.g. an insecure non-local HTTP context).
   const revisionState = await Promise.all(refs.map(async ref => {
@@ -1068,6 +1126,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     truncated: Object.values(truncation).some(Boolean),
     truncation,
   };
+  if (target && !refs.length) snapshot.refusal = bounded(explain(target), LIMITS.text);
 
   const setValue = (element, text) => {
     const proto = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;

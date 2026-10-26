@@ -74,7 +74,8 @@ IDs stay private. Another snapshot, action, raw call or lifecycle invalidation
 expires them. Before any effect, the locator checks the current document and
 semantic identity, then the guard creates and revalidates a separate one-use
 action handle. A replaced, disabled, private, occluded or unsupported target
-does not become a coordinate click. Frame refs currently support reading only;
+does not become a coordinate click; the blocked reason says which it was and
+the next move. Frame refs currently support reading only;
 actions return `frame_actions_unsupported`.
 
 Use `page.getByRole('button', {name:'Select', context:'group: Outbound'})`

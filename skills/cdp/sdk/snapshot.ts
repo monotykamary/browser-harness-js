@@ -53,6 +53,8 @@ export function nodeIdentity(node: AXNode): string {
     node.description?.value, ...['checked', 'selected', 'expanded', 'disabled', 'readonly', 'required'].map(k => p[k])])).digest('hex');
 }
 
+export const MISSING_SUBTREE = 'Snapshot subtree is missing or ambiguous';
+
 /** The largest `maxChars` a snapshot accepts. */
 export const MAX_SNAPSHOT_CHARS = 1_000_000;
 
@@ -79,7 +81,7 @@ export function renderAX(
   const roots = rootBackendId === undefined
     ? [...byId.values()].filter(n => !childIds.has(n.nodeId))
     : [...byId.values()].filter(n => n.backendDOMNodeId === rootBackendId);
-  if (rootBackendId !== undefined && roots.length !== 1) throw new Error('Snapshot subtree is missing or ambiguous');
+  if (rootBackendId !== undefined && roots.length !== 1) throw new Error(MISSING_SUBTREE);
   if (nodes.length && !roots.length) throw new Error('AX tree has no root');
   type View = { node: AXNode; role: string; name: string; children: View[]; text?: string; sensitive: boolean };
   const visited = new Set<string>();

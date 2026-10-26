@@ -117,7 +117,20 @@ class FixtureSession {
       const obj = this.objects.get(params.objectId);
       if (!obj || obj.sid !== sid) throw new Error('Native object gone');
       const fn = runInContext(`(${params.functionDeclaration})`, page.context);
-      result = { result: { value: structuredClone(fn.apply(obj.value, (params.arguments ?? []).map((a: any) => a.value))) } };
+      const value = fn.apply(obj.value, (params.arguments ?? []).map((a: any) => a.value));
+      if (params.returnByValue) result = { result: { value: structuredClone(value) } };
+      else {
+        // A single-target projection returns its guard object by reference.
+        const objectId = `object-${++this.next}`;
+        this.objects.set(objectId, { sid, value: params.awaitPromise ? await value : value });
+        result = { result: { objectId } };
+      }
+    } else if (method === 'DOM.resolveNode') {
+      const node = page.nodes[params.backendNodeId - 1];
+      if (!node) throw new Error('No node with given id found');
+      const objectId = `object-${++this.next}`;
+      this.objects.set(objectId, { sid, value: node });
+      result = { object: { objectId } };
     } else if (method === 'Runtime.releaseObject') this.objects.delete(params.objectId);
     await this.after?.(method, params, sid);
     return result;
@@ -678,5 +691,55 @@ test('a transparent native radio, checkbox or select over its drawn proxy stays 
   const again = await controller.observe({ scope }); radio.hit = false;
   assert.equal((await controller.act(action(again, 0))).status, 'blocked');
   assert.equal(radio.clicks, 1);
+  controller.close();
+});
+
+test('a refused single target says why, with the next move, and is still refused', async () => {
+  const { controller, page } = setup();
+  const button = (text: string) => new ElementFixture('BUTTON', text);
+  const locked = button('Locked action'); locked.disabled = true;
+  const ghost = button('Ghost action'); ghost.style.opacity = '0';
+  const inMenu = button('New project'); inMenu.parentElement = new ElementFixture('DIV', 'New project'); inMenu.parentElement.attrs.id = 'menu';
+  inMenu.parentElement.style.display = 'none';
+  const caret = new ElementFixture('DIV', ''); caret.attrs.id = 'caret'; caret.attrs['aria-hidden'] = 'true';
+  const empty = button('Empty');
+  const below = new ElementFixture('DIV', 'Footer note');
+  const covered = button('Apply now'); covered.hit = false;
+  const overlay = new ElementFixture('DIV', 'Notice'); overlay.attrs.id = 'notice';
+  const secret = new InputFixture(); secret.attrs.name = 'password';
+  const plain = new ElementFixture('DIV', 'Plain text');
+  const readonly = new InputFixture(); readonly.readOnly = true;
+  const radio = new InputFixture('radio'); radio.attrs['aria-label'] = 'No'; radio.style.opacity = '0'; radio.hit = false;
+  const ring = new ElementFixture('SPAN', '');
+  const fine = button('Continue');
+  page.nodes = [locked, ghost, inMenu, caret, empty, below, covered, overlay, secret, plain, readonly, radio, ring, fine];
+  page.refreshNodes();
+  empty.rect = { x: 10, y: empty.rect.y, width: 0, height: 0 };
+  below.rect = { ...below.rect, y: 2000 };
+  overlay.rect = { ...covered.rect };
+  ring.rect = { ...radio.rect };
+  const why = async (el: ElementFixture) => (await controller.observe({ scope, backendNodeId: page.nodes.indexOf(el) + 1 }));
+  const expected: [ElementFixture, RegExp][] = [
+    [locked, /^disabled; check that this is the expected state, or do what enables it first$/],
+    [ghost, /^hidden \(itself\); open or reveal/],
+    [inMenu, /^hidden \(by ancestor div#menu "New project"\)/],
+    [caret, /^pointer-only: visible, but hidden from the accessibility tree \(aria-hidden on itself\).*\{x:60,y:145\}/],
+    [empty, /^it has no size on the page$/],
+    [below, /^outside the viewport; scroll it into view, then retry$/],
+    [covered, /^covered at its centre by div#notice "Notice"; close or move what covers it/],
+    [secret, /^sensitive: .*allowSensitive grant$/],
+    [plain, /^not an operable control \(div\); act on the control itself/],
+    [readonly, /^read-only/],
+    // A transparent radio is excused its opacity, so what blocks it is the ring over it.
+    [radio, /^covered at its centre by span/],
+  ];
+  for (const [el, reason] of expected) {
+    const seen = await why(el);
+    assert.equal(seen.candidates.length, 0, el.textContent);
+    assert.match(seen.refusal ?? '', reason);
+  }
+  const offered = await why(fine);
+  assert.equal(offered.candidates.length, 1); assert.equal(offered.refusal, undefined);
+  assert.equal((await controller.observe({ scope })).refusal, undefined, 'only single-target observations explain');
   controller.close();
 });

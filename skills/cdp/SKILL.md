@@ -86,6 +86,10 @@ as `verificationError`. **`executed` only means dispatched, not task success.**
 
 - `stale`: take fresh evidence and reconsider.
 - `blocked` / origin denial: stop or obtain authority; never bypass via raw CDP.
+  A refused target's reason says why and what to do next, e.g.
+  `not_interactable_or_unsupported: disabled; …`, `hidden (by ancestor …)`,
+  `covered at its centre by …`, or `pointer-only` with the point a user would
+  click. It is a diagnosis; the target stays refused.
 - `outcome_unknown`: inspect first; never automatically replay the effect.
 
 `{timeoutMs, signal}` are accepted by page operations and locator actions. The
