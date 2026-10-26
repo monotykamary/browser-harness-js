@@ -32,7 +32,9 @@ const large = () => `<!doctype html><title>Catalogue</title>${Array.from({length
 <p id="state">Basket empty</p><button onclick="document.getElementById('state').textContent='Basket checked out'">Checkout</button>`;
 // Forty opaque-origin ad frames rendered in the page's own process, plus a readable frame.
 const ads = () => `<!doctype html><title>Ads</title><button>Buy</button><iframe src="/child"></iframe>${Array.from({length:40},(_,i)=>`<iframe src="data:text/html,<p>ad ${i}</p>"></iframe>`).join('')}`;
-const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/shapes': shapes, '/large': large, '/ads': ads };
+// A login page with an opaque-origin ad frame beside its own button.
+const login = () => `<!doctype html><title>Login</title><p id="state">Signed out</p><button onclick="document.getElementById('state').textContent='Signed in'">Sign in</button><iframe src="data:text/html,<button>Ad</button>"></iframe>`;
+const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/shapes': shapes, '/large': large, '/ads': ads, '/login': login };
 before(async () => {
   server=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((routes[req.url ?? ''] ?? html)());});
   await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
@@ -187,5 +189,14 @@ test('denied ad frames are omitted without counting toward the frame limit',asyn
     const shot=await p.page.snapshot();
     assert.equal(shot.omissions.filter(o=>o.endsWith('origin_denied')).length,40,JSON.stringify(shot.omissions));
     assert.match(shot.tree,/button "Buy"/);assert.match(shot.tree,/button "Child button"/);
+  }finally{await p.close();}
+});
+
+test('role locators act on a page whose only omissions are denied frames',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/login');try{
+    assert.ok((await p.page.snapshot()).omissions.some(o=>o.endsWith('origin_denied')));
+    const signin=await p.page.getByRole('button',{name:'Sign in'}).click({verify:s=>s.tree.includes('Signed in')});
+    assert.equal(signin.status,'executed',JSON.stringify(signin).slice(0,300));assert.equal(signin.verified,true);
   }finally{await p.close();}
 });
