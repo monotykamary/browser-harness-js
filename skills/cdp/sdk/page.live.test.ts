@@ -105,6 +105,17 @@ test('old refs and replaced nodes fail closed; disabled/private targets and deni
   }finally{await p.close();}
 });
 
+test('sensitive fields need an explicit host grant; snapshots keep redacting them',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const browser=new Browser();await browser.connect({port});
+  const page=await browser.open(origin,{allowedOrigins:[origin,crossOrigin],allowSensitive:true,timeoutMs:15000});
+  try{
+    const fill=await page.getByRole('textbox',{name:'Password'}).fill('runner-secret');
+    assert.equal(fill.status,'executed',JSON.stringify(fill));assert.equal(fill.verified,true);
+    assert.ok(!fill.snapshot!.tree.includes('runner-secret'),'the grant does not lift snapshot redaction');
+  }finally{await page.close();browser.disconnect();}
+});
+
 test('bounded observations remain usable by model-neutral callers; verification captures static text changes',async t=>{
   if(!port)return t.skip('Chrome not installed');
   const p=await open();try{

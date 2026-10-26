@@ -605,3 +605,53 @@ test('layout shifts and cosmetic churn keep a target; its meaning and occlusion 
   assert.equal((await controller.act(action(seen))).status, 'blocked', 'a shift under an overlay is still occluded');
   controller.close();
 });
+
+test('sensitive fields stay excluded by default; an explicit host grant makes them operable and observable', async () => {
+  const fields = () => {
+    const password = new InputFixture('password'); password.attrs['aria-label'] = 'Password';
+    const email = new InputFixture('email'); email.attrs['aria-label'] = 'Work e-mail';
+    const phone = new InputFixture('tel'); phone.attrs['aria-label'] = 'Phone';
+    const named = new InputFixture(); named.attrs.name = 'first_name';
+    const card = new InputFixture(); card.attrs.autocomplete = 'cc-number';
+    const marked = new InputFixture(); marked.attrs['data-private'] = '';
+    const nested = new InputFixture(); nested.parentElement = new ElementFixture('DIV'); nested.parentElement.attrs['data-sensitive'] = '';
+    const all = [password, email, phone, named, card, marked, nested];
+    for (const field of all) field.value = 'PRIVATE_RAW_SENTINEL';
+    return all;
+  };
+  const observe = async (options: { allowSensitive?: boolean }) => {
+    const session = new FixtureSession(); const page = session.pages.get('one')!;
+    page.nodes = [new ElementFixture(), ...fields()]; page.refreshNodes();
+    const controller = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], ...options });
+    return { controller, page, seen: await controller.observe({ scope }) };
+  };
+  const plain = await observe({});
+  assert.deepEqual(plain.seen.candidates.map(c => c.label), ['Continue']);
+  assert.ok(!JSON.stringify(plain.seen).includes('PRIVATE_RAW_SENTINEL'));
+  plain.controller.close();
+
+  const granted = await observe({ allowSensitive: true });
+  assert.equal(granted.seen.candidates.length, 8);
+  assert.deepEqual(granted.seen.candidates.slice(1, 4).map(c => [c.role, c.label, c.value]),
+    [['textbox', 'Password', 'PRIVATE_RAW_SENTINEL'], ['textbox', 'Work e-mail', 'PRIVATE_RAW_SENTINEL'], ['textbox', 'Phone', 'PRIVATE_RAW_SENTINEL']]);
+  assert.equal((await granted.controller.act(action(granted.seen, 1, 'type', 'hunter2'))).status, 'executed');
+  assert.equal((granted.page.nodes[1] as InputFixture).value, 'hunter2');
+  granted.controller.close();
+
+  // Without an explicit option the host's environment decides, read at observation time; an explicit false wins.
+  const previous = process.env.BH_ALLOW_SENSITIVE;
+  try {
+    const session = new FixtureSession(); const page = session.pages.get('one')!;
+    page.nodes = [new ElementFixture(), ...fields()]; page.refreshNodes();
+    const inherit = new InteractionController(session, { allowedOrigins: ['https://allowed.test'] });
+    const refuse = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], allowSensitive: false });
+    assert.equal((await inherit.observe({ scope })).candidates.length, 1);
+    process.env.BH_ALLOW_SENSITIVE = '1';
+    assert.equal((await inherit.observe({ scope })).candidates.length, 8);
+    assert.equal((await refuse.observe({ scope })).candidates.length, 1);
+    inherit.close(); refuse.close();
+  } finally {
+    if (previous === undefined) delete process.env.BH_ALLOW_SENSITIVE; else process.env.BH_ALLOW_SENSITIVE = previous;
+  }
+  assert.throws(() => new InteractionController(new FixtureSession(), { allowedOrigins: ['https://allowed.test'], allowSensitive: 'yes' as any }), /allowSensitive must be a boolean/);
+});
