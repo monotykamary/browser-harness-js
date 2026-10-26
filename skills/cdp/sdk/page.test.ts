@@ -46,7 +46,9 @@ class Transport {
         this.emit('Page.frameNavigated', {frame:{id:'frame',url:this.url}});
         this.emit('Page.lifecycleEvent', {name:'load',loaderId:'loader'});
         return {loaderId:'loader'};
-      case 'Accessibility.getFullAXTree': return {nodes:this.axNodes ?? [{nodeId:'root',ignored:false,backendDOMNodeId:1,role:{type:'role',value:'RootWebArea'},name:{type:'string',value:'Fixture'}}]};
+      case 'Accessibility.getFullAXTree':
+        if (params.frameId === 'broken') throw new Error('Frame renderer unavailable');
+        return {nodes:this.axNodes ?? [{nodeId:'root',ignored:false,backendDOMNodeId:1,role:{type:'role',value:'RootWebArea'},name:{type:'string',value:'Fixture'}}]};
       case 'Runtime.evaluate': return {result:{value:{url:this.url,title:'Fixture'}}};
       default: throw new Error(`Unexpected method ${method}`);
     }
@@ -166,5 +168,27 @@ test('role locators resolve on pages whose snapshot exceeds the default characte
   const result=await page.getByRole('button',{name:'Checkout'}).click();
   assert.doesNotMatch(String(result.reason),/Snapshot exceeds/);
   assert.ok(transport.calls.some(c=>c.method==='Accessibility.getPartialAXTree'&&c.params.backendNodeId===99),'the unique role match is the resolved target');
+  page.dispose();
+});
+
+test('role locators judge uniqueness over readable frames; cut renders and unreadable allowed frames still refuse', async () => {
+  const {transport,page}=setup();
+  const named=(nodeId:string,backend:number,role:string,name:string,childIds:string[]=[])=>({nodeId,ignored:false,backendDOMNodeId:backend,role:{type:'role',value:role},name:{type:'string',value:name},childIds});
+  transport.axNodes=[named('root',1,'RootWebArea','Login',['signin']),named('signin',50,'button','Sign in')];
+  // A data: URL ad frame (opaque origin, denied) and a frame that has not committed yet.
+  transport.children=[{id:'ad',loaderId:'ad-loader',url:'data:text/html,<button>Ad</button>'},{id:'pending',loaderId:'',url:`${origin}/pending`}];
+  const shot=await page.snapshot();
+  assert.deepEqual(shot.omissions,['frame ad: origin_denied','frame pending: not committed']);assert.equal(shot.truncated,true);
+  const click=await page.getByRole('button',{name:'Sign in'}).click();
+  assert.doesNotMatch(String(click.reason),/complete snapshot/);
+  assert.ok(transport.calls.some(c=>c.method==='Accessibility.getPartialAXTree'&&c.params.backendNodeId===50),'the main-frame button is the resolved target');
+  // An allowed frame that could not be read might hold another match.
+  transport.children=[{id:'broken',loaderId:'broken-loader',url:`${origin}/broken`}];
+  assert.match(String((await page.getByRole('button',{name:'Sign in'}).click()).reason),/Strict locator requires a complete snapshot/);
+  // A render cut at maxDepth is incomplete even when every omission is a denied frame.
+  const chain=Array.from({length:55},(_,i)=>named(`g${i}`,100+i,'group',`Level ${i}`,[i===54?'deep':`g${i+1}`]));
+  transport.axNodes=[named('root',1,'RootWebArea','Login',['g0']),...chain,named('deep',99,'button','Sign in')];
+  transport.children=[{id:'ad',loaderId:'ad-loader',url:'data:text/html,<button>Ad</button>'}];
+  assert.match(String((await page.getByRole('button',{name:'Sign in'}).click()).reason),/Strict locator requires a complete snapshot/);
   page.dispose();
 });

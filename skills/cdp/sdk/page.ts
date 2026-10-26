@@ -26,6 +26,7 @@ type Frame = SnapshotFrame & { parentId?: string };
 const invalidations = new Set(['Page.frameNavigated', 'Page.navigatedWithinDocument', 'Page.frameDetached',
   'Runtime.executionContextsCleared', 'DOM.documentUpdated', 'Inspector.detached', 'Inspector.targetCrashed']);
 const MAX_FRAMES = 64;
+const UNREADABLE_FRAME = /^frame \S+: (?:origin_denied|not committed)$/;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 /** The blocked reason when the guard offers no candidate: a stable code, then why and the next move. */
 const refusal = (seen: InteractionObservation) => 'not_interactable_or_unsupported' +
@@ -257,6 +258,10 @@ export class Page {
     return this.run(signal => this.snapshotInternal(copy, signal), copy);
   }
   private async snapshotInternal(options: SnapshotOptions, signal: AbortSignal): Promise<PageSnapshot> {
+    return (await this.read(options, signal)).snapshot;
+  }
+  /** A snapshot plus whether its rendered tree itself was cut (maxDepth), apart from omitted frames. */
+  private async read(options: SnapshotOptions, signal: AbortSignal): Promise<{ snapshot: PageSnapshot; renderTruncated: boolean }> {
     const limits = snapshotLimits(options);
     const selected = options.ref !== undefined ? this.refs.get(options.ref) : undefined;
     if (options.ref !== undefined && !selected) throw new Error('stale_ref: take a new snapshot');
@@ -312,7 +317,7 @@ export class Page {
     const result: PageSnapshot = { id: randomUUID(), url: main.url, title, tree,
       diff: snapshotDiff(previous?.tree, tree, keys, previous?.keys ?? new Map()), truncated: truncated || omissions.length > 0, omissions };
     this.refs = refs; this.previous = { tree, keys, scope };
-    return result;
+    return { snapshot: result, renderTruncated: truncated };
   }
 
   locator(selectorOrRef: string): Locator {
@@ -361,8 +366,11 @@ export class Page {
     }
     // Role matching needs the complete scope, not a readable digest: read up to the
     // documented maximum so large pages resolve instead of failing at the 50,000 default.
-    const snapshot = await this.snapshotInternal({ frameId: query.frameId, maxChars: MAX_SNAPSHOT_CHARS }, signal);
-    if (snapshot.truncated) throw new Error('Strict locator requires a complete snapshot; narrow the frame or use a selector');
+    const { snapshot, renderTruncated } = await this.read({ frameId: query.frameId, maxChars: MAX_SNAPSHOT_CHARS }, signal);
+    // Frames nothing can read or act in (denied cross-origin ads and trackers, frames not yet
+    // committed) cannot hold a match, so uniqueness is judged over the readable content. A cut
+    // render or any other omission (an unreadable allowed frame) still makes the scope incomplete.
+    if (renderTruncated || snapshot.omissions.some(omission => !UNREADABLE_FRAME.test(omission))) throw new Error('Strict locator requires a complete snapshot; narrow the frame or use a selector');
     const matches = [...this.refs.values()].filter(ref => ref.role === query.role &&
       (query.options.name === undefined || (query.options.exact === false ? ref.name.includes(query.options.name) : ref.name === query.options.name)) &&
       (query.options.context === undefined || ref.context === query.options.context));

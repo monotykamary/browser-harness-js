@@ -83,7 +83,10 @@ when the intended semantics should be resolved anew. Role matching is exact by
 default and requires exactly one match across the requested, complete scope;
 it never selects the first candidate. Resolution reads that scope up to the
 1,000,000-character maximum, so role locators work on pages larger than the
-50,000-character snapshot default. CSS is strict within one frame and does
+50,000-character snapshot default. Frames nothing can read or act in (denied
+cross-origin ads and trackers, frames not yet committed) cannot hold a match, so
+they do not make the scope incomplete; a depth-cut render or an allowed frame
+that could not be read still refuses as incomplete. CSS is strict within one frame and does
 not pierce shadow roots; native AX role lookup can see through them.
 
 ## Managed diffs
