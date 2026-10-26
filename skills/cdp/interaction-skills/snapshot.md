@@ -80,7 +80,9 @@ actions return `frame_actions_unsupported`.
 Use `page.getByRole('button', {name:'Select', context:'group: Outbound'})`
 when the intended semantics should be resolved anew. Role matching is exact by
 default and requires exactly one match across the requested, complete scope;
-it never selects the first candidate. CSS is strict within one frame and does
+it never selects the first candidate. Resolution reads that scope up to the
+1,000,000-character maximum, so role locators work on pages larger than the
+50,000-character snapshot default. CSS is strict within one frame and does
 not pierce shadow roots; native AX role lookup can see through them.
 
 ## Managed diffs

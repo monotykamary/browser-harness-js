@@ -17,6 +17,7 @@ class Transport {
   redirect?: string;
   iframe = false;
   children: {id:string;loaderId:string;url:string}[] = [];
+  axNodes?: any[];
   calls: {method:string;params:any;sid?:string}[] = [];
   listeners = new Set<(method:string, params:any, sid?:string)=>void>();
   before?: (method:string, params:any)=>Promise<void> | void;
@@ -45,7 +46,7 @@ class Transport {
         this.emit('Page.frameNavigated', {frame:{id:'frame',url:this.url}});
         this.emit('Page.lifecycleEvent', {name:'load',loaderId:'loader'});
         return {loaderId:'loader'};
-      case 'Accessibility.getFullAXTree': return {nodes:[{nodeId:'root',ignored:false,backendDOMNodeId:1,role:{type:'role',value:'RootWebArea'},name:{type:'string',value:'Fixture'}}]};
+      case 'Accessibility.getFullAXTree': return {nodes:this.axNodes ?? [{nodeId:'root',ignored:false,backendDOMNodeId:1,role:{type:'role',value:'RootWebArea'},name:{type:'string',value:'Fixture'}}]};
       case 'Runtime.evaluate': return {result:{value:{url:this.url,title:'Fixture'}}};
       default: throw new Error(`Unexpected method ${method}`);
     }
@@ -151,5 +152,19 @@ test('denied frames are omitted without counting toward the readable frame limit
   await assert.rejects(page.snapshot(),/Frame count exceeds 64/);
   transport.children.pop();
   assert.equal((await page.frames()).frames.length,64);
+  page.dispose();
+});
+
+test('role locators resolve on pages whose snapshot exceeds the default character limit', async () => {
+  const {transport,page}=setup();
+  const text=Array.from({length:1200},(_,i)=>({nodeId:`t${i}`,ignored:false,role:{type:'role',value:'StaticText'},name:{type:'string',value:`Catalogue line ${i} with enough words to fill the page`}}));
+  const target={nodeId:'target',ignored:false,backendDOMNodeId:99,role:{type:'role',value:'button'},name:{type:'string',value:'Checkout'}};
+  transport.axNodes=[{nodeId:'root',ignored:false,backendDOMNodeId:1,role:{type:'role',value:'RootWebArea'},name:{type:'string',value:'Fixture'},
+    childIds:[...text.map(n=>n.nodeId),'target']},...text,target];
+  // Plain snapshots keep their 50,000-character default.
+  await assert.rejects(page.snapshot(),/Snapshot exceeds 50000 characters/);
+  const result=await page.getByRole('button',{name:'Checkout'}).click();
+  assert.doesNotMatch(String(result.reason),/Snapshot exceeds/);
+  assert.ok(transport.calls.some(c=>c.method==='Accessibility.getPartialAXTree'&&c.params.backendNodeId===99),'the unique role match is the resolved target');
   page.dispose();
 });

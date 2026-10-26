@@ -19,9 +19,12 @@ const html = () => `<!doctype html><title>Page ergonomics</title><style>body{fon
 <shadow-box></shadow-box><div style="height:1800px"></div><button id="below" onclick="document.getElementById('status').textContent='Below clicked'">Below fold</button>
 <script>document.getElementById('pointer').addEventListener('pointerdown',()=>document.getElementById('status').textContent='Pointer worked');
 customElements.define('shadow-box',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<button>Shadow button</button>'}});</script>`;
+// A page whose snapshot exceeds the 50,000-character default.
+const large = () => `<!doctype html><title>Catalogue</title>${Array.from({length:1500},(_,i)=>`<p>Catalogue line ${i} with enough words to fill the page</p>`).join('')}
+<p id="state">Basket empty</p><button onclick="document.getElementById('state').textContent='Basket checked out'">Checkout</button>`;
 // Forty opaque-origin ad frames rendered in the page's own process, plus a readable frame.
 const ads = () => `<!doctype html><title>Ads</title><button>Buy</button><iframe src="/child"></iframe>${Array.from({length:40},(_,i)=>`<iframe src="data:text/html,<p>ad ${i}</p>"></iframe>`).join('')}`;
-const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/ads': ads };
+const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/large': large, '/ads': ads };
 before(async () => {
   server=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((routes[req.url ?? ''] ?? html)());});
   await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
@@ -120,6 +123,16 @@ test('bounded observations remain usable by model-neutral callers; verification 
       assert.equal((await p.page.act(other,{targetId:other.candidates[0]!.id,operation:'click'})).reason,'scope_mismatch');
     }
     finally{await two.close();}
+  }finally{await p.close();}
+});
+
+test('role locators resolve on pages larger than the snapshot default',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/large');try{
+    await assert.rejects(p.page.snapshot(),/Snapshot exceeds 50000 characters/);
+    const checkout=await p.page.getByRole('button',{name:'Checkout'}).click({timeoutMs:30000});
+    assert.equal(checkout.status,'executed',JSON.stringify(checkout).slice(0,300));
+    assert.match((await p.page.snapshot({selector:'#state'})).tree,/Basket checked out/);
   }finally{await p.close();}
 });
 
