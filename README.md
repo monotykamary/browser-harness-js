@@ -75,7 +75,10 @@ Supported methods are `click`, `fill`, `press`, `selectOption` and
 goals use `verify(snapshot)` or an authoritative external check.
 
 **`executed` means dispatched, not goal achieved.** Inspect `verified` and the
-returned evidence. Stale → reobserve; blocked/denied → stop or obtain authority;
+returned evidence. A refused target's reason says why (disabled, hidden by
+what, pointer-only with its click point, outside the viewport, covered by what,
+not a control, sensitive) and the next move, without making it actionable.
+Stale → reobserve; blocked/denied → stop or obtain authority;
 outcome_unknown → inspect, never blindly retry. No ambiguous first-match
 selection, automatic action replay, or raw-input fallback. Timeouts/cancellation
 cannot undo sent input; unresolved calls retain their queue fence.

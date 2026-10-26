@@ -67,6 +67,18 @@ and legacy synthetic default. There is no REPL controller-factory global.
 | `blocked` / origin denial | Stop or obtain authority. Never evade through raw APIs. |
 | `outcome_unknown` | Inspect first. Never blindly retry an uncertain effect. |
 
+When the guard offers no candidate for a locator's target, the reason keeps the
+stable code and adds why, then the next move:
+`not_interactable_or_unsupported: <why>; <next move>`. The causes are, in
+order: `sensitive` (no host grant), `disabled`, `hidden (itself)` or
+`hidden (by ancestor …)`, `pointer-only` (visible but `aria-hidden`, with the
+point a user would click), no size, outside the viewport, `covered at its
+centre by …`, `read-only`, and `not an operable control`. A CSS locator whose
+element is outside the accessibility tree reports the same cause after
+`No accessible target for selector:`. This is diagnosis only. The target stays
+refused, and acting on a suggested move is a new decision. A pointer-only
+coordinate click is raw input and needs its own authority.
+
 `verified:null` means no goal predicate/read-back was established; `false` means
 the check did not hold. A read failure is reported as `verificationError`.
 Read APIs reject on denial, unavailability or cancellation. Actions return

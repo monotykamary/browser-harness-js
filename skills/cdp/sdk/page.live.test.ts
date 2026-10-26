@@ -19,10 +19,13 @@ const html = () => `<!doctype html><title>Page ergonomics</title><style>body{fon
 <shadow-box></shadow-box><div style="height:1800px"></div><button id="below" onclick="document.getElementById('status').textContent='Below clicked'">Below fold</button>
 <script>document.getElementById('pointer').addEventListener('pointerdown',()=>document.getElementById('status').textContent='Pointer worked');
 customElements.define('shadow-box',class extends HTMLElement{constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<button>Shadow button</button>'}});</script>`;
-// Guard shapes from real pages: a native radio made transparent over its drawn ring.
+// Guard shapes from real pages: a native radio made transparent over its drawn ring, a
+// disabled button, a sub-menu caret hidden from the accessibility tree and a covered button.
 const shapes = () => `<!doctype html><title>Guard shapes</title><body style="margin:16px;font:14px sans-serif">
 <span style="position:relative;display:inline-flex;width:16px;height:16px"><input type="radio" name="answer" aria-label="No" style="position:absolute;width:16px;height:16px;margin:0;opacity:0"><span style="pointer-events:none;width:14px;height:14px;border:1px solid #888;border-radius:50%"></span></span><span>No</span>
-<button style="opacity:0">Ghost action</button>
+<button style="opacity:0">Ghost action</button><button disabled>Locked action</button>
+<div role="menubar" style="height:30px"><div role="menuitem" tabindex="0" style="display:inline-block">Accounts</div><div id="caret" aria-hidden="true" style="display:inline-block;width:18px;height:18px;cursor:pointer;background:#ccc" onclick="document.getElementById('sub').style.display='block'"></div><div id="sub" role="menu" style="display:none"><div role="menuitem">New Account</div></div></div>
+<div style="position:relative;height:40px"><button>Apply now</button><div id="notice" style="position:absolute;inset:0;background:#ffe">Notice</div></div>
 </body>`;
 // A page whose snapshot exceeds the 50,000-character default.
 const large = () => `<!doctype html><title>Catalogue</title>${Array.from({length:1500},(_,i)=>`<p>Catalogue line ${i} with enough words to fill the page</p>`).join('')}
@@ -150,6 +153,21 @@ test('a transparent native radio over its drawn ring takes a real click; a trans
     assert.match(radio.snapshot!.tree,/radio "No".*\[checked=true\]/);
     const ghost=await p.page.getByRole('button',{name:'Ghost action'}).click();
     assert.equal(ghost.status,'blocked',JSON.stringify(ghost));
+  }finally{await p.close();}
+});
+
+test('refusals say why and what to do next, and never act',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/shapes');try{
+    const ghost=await p.page.getByRole('button',{name:'Ghost action'}).click();
+    assert.equal(ghost.status,'blocked');assert.match(ghost.reason!,/^not_interactable_or_unsupported: hidden \(itself\)/);
+    const locked=await p.page.getByRole('button',{name:'Locked action'}).click();
+    assert.equal(locked.status,'blocked');assert.match(locked.reason!,/^not_interactable_or_unsupported: disabled/);
+    const covered=await p.page.getByRole('button',{name:'Apply now'}).click();
+    assert.equal(covered.status,'blocked');assert.match(covered.reason!,/covered at its centre by div#notice "Notice"/);
+    const caret=await p.page.locator('#caret').click();
+    assert.equal(caret.status,'blocked');assert.match(caret.reason!,/^No accessible target for selector: pointer-only: .*\{x:\d+,y:\d+\}/);
+    assert.doesNotMatch((await p.page.snapshot()).tree,/New Account/,'a refusal never clicks');
   }finally{await p.close();}
 });
 
