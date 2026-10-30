@@ -93,7 +93,13 @@ and reconnect expire refs/handles; reattach after reconnect.
 
 - Trusted click/fill/allowlisted-key input is the default for Page. Native selects
   accept a unique label or index. `fill` replaces the entire value, maximum 4096
-  characters; it is not arbitrary rich-editor typing.
+  characters; it is not arbitrary rich-editor typing. Trusted `fill` clicks into
+  the field, selects all with the platform's modifier and presses a key per
+  keyable character; characters no US key types are committed whole (one
+  grapheme at a time), and text over 256 characters is pasted. Native date
+  controls are typed segment by segment in the locale's order and confirmed;
+  other native date/time controls are set with events; the receipt's `expected`
+  holds the value in the control's format.
 - An offscreen supported target may be scrolled once through a guarded
   `scroll_into_view` action, followed by fresh observation and identity checks.
   Ordinary bounded observations also offer page/container scroll operations.
@@ -104,9 +110,12 @@ and reconnect expire refs/handles; reattach after reconnect.
   radio or select whose only hidden reason is its own `opacity:0`, laid over a
   drawn proxy (a styled ring or box with `pointer-events:none`), stays a
   candidate because that is what a user's click reaches; the hit test must
-  still land on it. A transparent button or link stays hidden.
+  still land on it. The same holds for a transparent native file input drawn
+  as a button. A transparent button or link stays hidden. A hit that stops at
+  the host of the closed shadow root holding the target is the target's own
+  component, not a cover.
 - Open shadow roots and supported native/ARIA controls are included. AX reading
-  is broader than guarded actions: frame actions, closed shadow roots, canvas
+  is broader than guarded actions: frame actions, closed shadow roots (except a locator's resolved target), canvas
   and unsupported widgets fail closed. Snapshot frame reading is supported.
 - Sensitive controls are excluded by private markers, autocomplete and
   conservative name/id/label checks. Snapshot redaction is separate. Neither
@@ -115,7 +124,9 @@ and reconnect expire refs/handles; reattach after reconnect.
   `allowSensitive: true` (or `BH_ALLOW_SENSITIVE=1` in the host process when
   the option is omitted): password, e-mail, phone and marked fields become
   ordinary candidates whose values appear in observations, so redacting kept
-  evidence becomes the host's job. Snapshot redaction is unchanged. The grant
+  evidence becomes the host's job. With `maskSensitive: true` as well, their
+  values stay in the page and are observed as `[masked]`; a fill into one is
+  not verified by read-back (`verified: null`). Snapshot redaction is unchanged. The grant
   comes from the host, never from page content or a model. Exact identity hashes require in-page
   SubtleCrypto (normally HTTPS/localhost).
 - Page work is serialized; guarded effects also share a transport/scope fence
