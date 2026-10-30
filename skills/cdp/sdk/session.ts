@@ -65,6 +65,10 @@ export type ConnectOptions = {
   /** How long auto-connect waits for the extension before falling back
    *  to remote debugging. Default 500. Ignored when transport is pinned. */
   extensionWaitMs?: number;
+  /** Headers for the remote-debugging WebSocket upgrade: a hosted browser's DevTools
+   *  endpoint authenticates with them. Node's and Bun's built-in WebSocket send them;
+   *  persisted on the Session so auto-heal reconnects send them too. */
+  headers?: Readonly<Record<string, string>>;
 };
 
 export type SessionTransport = 'extension' | 'cdp';
@@ -219,7 +223,11 @@ export class Session implements Transport {
     allow?: { autoAllow: boolean; name?: string; autoAllowDelayMs: number },
   ): Promise<void> {
     return new Promise<void>((res, rej) => {
-      const ws = new WebSocket(wsUrl);
+      const headers = this.connectionOptions?.headers;
+      // The WHATWG constructor takes protocols only; Node (undici) and Bun also accept an init with headers.
+      const ws = headers
+        ? new WebSocket(wsUrl, { headers: { ...headers } } as unknown as string[])
+        : new WebSocket(wsUrl);
       let done = false;
       let allowTried = false;
       const finish = (err?: Error) => {

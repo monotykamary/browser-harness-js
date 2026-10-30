@@ -155,3 +155,18 @@ test('connect({ transport: "extension" }) fails closed when the extension is abs
     /timed out after 30ms waiting for the browser-harness-js extension/,
   );
 });
+
+test('a hosted browser authenticates the DevTools WebSocket upgrade with the headers given to connect', async () => {
+  const { createServer } = await import('node:http');
+  const seen: (string | undefined)[] = [];
+  const server = createServer();
+  // Record the upgrade and refuse it: the headers are what this checks, not the CDP session.
+  server.on('upgrade', (req, socket) => { seen.push(req.headers['x-api-key'] as string | undefined); socket.destroy(); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const wsUrl = `ws://127.0.0.1:${(server.address() as { port: number }).port}/devtools/browser/hosted`;
+  try {
+    await assert.rejects(new Session().connect({ wsUrl, transport: 'cdp', timeoutMs: 2000, headers: { 'x-api-key': 'k-123' } }));
+    await assert.rejects(new Session().connect({ wsUrl, transport: 'cdp', timeoutMs: 2000 }));
+    assert.deepEqual(seen, ['k-123', undefined]);
+  } finally { server.close(); }
+});
