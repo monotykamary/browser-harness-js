@@ -34,7 +34,18 @@ const large = () => `<!doctype html><title>Catalogue</title>${Array.from({length
 const ads = () => `<!doctype html><title>Ads</title><button>Buy</button><iframe src="/child"></iframe>${Array.from({length:40},(_,i)=>`<iframe src="data:text/html,<p>ad ${i}</p>"></iframe>`).join('')}`;
 // A login page with an opaque-origin ad frame beside its own button.
 const login = () => `<!doctype html><title>Login</title><p id="state">Signed out</p><button onclick="document.getElementById('state').textContent='Signed in'">Sign in</button><iframe src="data:text/html,<button>Ad</button>"></iframe>`;
-const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/shapes': shapes, '/large': large, '/ads': ads, '/login': login };
+// Fields a person types into: a text field that counts its key presses, a textarea, native date
+// and time controls, a password, a file input drawn as a button, and a sign-in sealed in a closed shadow root.
+const typing = () => `<!doctype html><title>Typing</title><body style="margin:16px;font:14px sans-serif">
+<label>City <input id="city" value="old value"></label> <label>Notes <textarea id="notes"></textarea></label>
+<label>Departure <input id="departure" type="date"></label> <label>Arrival time <input id="arrival" type="time"></label>
+<label>Password <input id="pw" type="password"></label>
+<span style="position:relative;display:inline-block;width:120px;height:30px"><input type="file" role="button" aria-label="Upload receipt" style="position:absolute;inset:0;width:120px;height:30px;margin:0;opacity:0"><span style="pointer-events:none;display:inline-block;width:118px;height:28px;border:1px solid #888">Upload</span></span>
+<p id="keys">0</p><p id="state">Signed out</p><sealed-signin></sealed-signin>
+<script>let keys=0;document.getElementById('city').addEventListener('keydown',e=>{if(!e.ctrlKey&&!e.metaKey)document.getElementById('keys').textContent=String(++keys)});
+customElements.define('sealed-signin',class extends HTMLElement{constructor(){super();const root=this.attachShadow({mode:'closed'});root.innerHTML='<button>Sealed sign in</button>';root.querySelector('button').addEventListener('click',()=>document.getElementById('state').textContent='Signed in')}});</script>
+</body>`;
+const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/shapes': shapes, '/large': large, '/ads': ads, '/login': login, '/typing': typing };
 before(async () => {
   server=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((routes[req.url ?? ''] ?? html)());});
   await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
@@ -198,5 +209,51 @@ test('role locators act on a page whose only omissions are denied frames',async 
     assert.ok((await p.page.snapshot()).omissions.some(o=>o.endsWith('origin_denied')));
     const signin=await p.page.getByRole('button',{name:'Sign in'}).click({verify:s=>s.tree.includes('Signed in')});
     assert.equal(signin.status,'executed',JSON.stringify(signin).slice(0,300));assert.equal(signin.verified,true);
+  }finally{await p.close();}
+});
+
+const valueOf=async(p:{browser:Browser,page:{scope:{sessionId:string}}},id:string)=>((await p.browser.session._call('Runtime.evaluate',{expression:`document.getElementById(${JSON.stringify(id)}).value`,returnByValue:true},{sessionId:p.page.scope.sessionId})) as {result:{value:string}}).result.value;
+
+test('fill types like a person: click, select what is there, a key per character; other scripts committed whole; long text pasted',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/typing');try{
+    const city=await p.page.getByRole('textbox',{name:'City'}).fill('Hà Nội 東京');
+    assert.equal(city.status,'executed',JSON.stringify(city).slice(0,300));assert.equal(city.reason,'typed_keys');assert.equal(city.verified,true);
+    assert.equal(await valueOf(p,'city'),'Hà Nội 東京','select-all replaced the old value');
+    // H, space, N, i, space: the keyable characters arrive as key presses the page hears.
+    assert.equal((await p.browser.session._call('Runtime.evaluate',{expression:'document.getElementById("keys").textContent',returnByValue:true},{sessionId:p.page.scope.sessionId}) as {result:{value:string}}).result.value,'5');
+    const long='Xin chào, こんにちは. '.repeat(16);
+    const notes=await p.page.getByRole('textbox',{name:'Notes'}).fill(long);
+    assert.equal(notes.reason,'pasted',JSON.stringify(notes).slice(0,300));assert.equal(notes.verified,true);assert.equal(await valueOf(p,'notes'),long);
+    const departure=await p.page.locator('#departure').fill('05/14/2026');
+    assert.equal(departure.status,'executed',JSON.stringify(departure).slice(0,300));assert.equal(departure.expected,'2026-05-14');
+    assert.match(departure.reason!,/^(typed_keys|typed_segments_not_accepted: value_set_synthetically)$/);
+    assert.equal(departure.verified,true);assert.equal(await valueOf(p,'departure'),'2026-05-14');
+    const arrival=await p.page.locator('#arrival').fill('2:30 pm');
+    assert.equal(arrival.expected,'14:30');assert.equal(arrival.verified,true);assert.equal(await valueOf(p,'arrival'),'14:30');
+    const bad=await p.page.locator('#departure').fill('ngày mai');
+    assert.equal(bad.status,'blocked');assert.match(bad.reason!,/^unsupported_value: this date control takes a date such as 2026-05-14$/);
+  }finally{await p.close();}
+});
+
+test('maskSensitive keeps a granted field\'s value in the page: typed, observed as [masked], never verified by read-back',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const browser=new Browser();await browser.connect({port});
+  const page=await browser.open(origin+'/typing',{allowedOrigins:[origin],allowSensitive:true,maskSensitive:true,timeoutMs:15000});
+  try{
+    const fill=await page.getByRole('textbox',{name:'Password'}).fill('hunter2');
+    assert.equal(fill.status,'executed',JSON.stringify(fill).slice(0,300));assert.equal(fill.verified,null);
+    assert.ok(!JSON.stringify(fill).includes('hunter2'),'the typed secret never comes back');
+    assert.equal((await page.observe()).candidates.find(c=>c.label==='Password')?.value,'[masked]');
+    assert.equal(await valueOf({browser,page},'pw'),'hunter2');
+  }finally{await page.close();browser.disconnect();}
+});
+
+test('a control in a closed shadow root takes a real click; a transparent file input over its drawn button is offered',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/typing');try{
+    const signin=await p.page.getByRole('button',{name:'Sealed sign in'}).click({verify:s=>s.tree.includes('Signed in')});
+    assert.equal(signin.status,'executed',JSON.stringify(signin).slice(0,300));assert.equal(signin.verified,true);
+    assert.ok((await p.page.observe()).candidates.some(c=>c.role==='button'&&c.label==='Upload receipt'));
   }finally{await p.close();}
 });

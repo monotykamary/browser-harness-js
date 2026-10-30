@@ -70,7 +70,7 @@ click. There is no automatic action retry or raw-input fallback.
 | `page.locator('#search')` | Standard CSS in the main frame; exactly one accessible element |
 | `page.getByRole('button', {name:'Save'})` | Exact native AX role/name by default; `exact:false` uses a case-sensitive name substring |
 | `getByRole(…, {context:'group: Outbound'})` | Disambiguate by nearest named non-control ancestor |
-| `locator.click()` / `.fill(text)` / `.press(key)` | Guarded click, entire-value replacement, or allowlisted key |
+| `locator.click()` / `.fill(text)` / `.press(key)` | Guarded click, entire-value replacement typed like a person, or allowlisted key |
 | `locator.selectOption(labelOrIndex)` | Unique option label or zero-based index of a native select; not its HTML value |
 | `locator.scrollIntoView()` | Guarded scroll of a supported target |
 | `page.frames()` / `page.frame(frameId).snapshot()` | Discover/read permitted same-process and cross-process frames |
@@ -135,7 +135,25 @@ filling a login form) can grant sensitive fields explicitly:
 like other controls; snapshot redaction stays on. Only the host grants this,
 never page content or a model's judgment. Embedding hosts may set
 `BH_ALLOW_SENSITIVE=1` instead (read at each observation when the option is
-omitted); the daemon only sees it if it was started with it.
+omitted); the daemon only sees it if it was started with it. Add
+`maskSensitive: true` to keep those values in the page: the fields are still
+offered and filled, but observed as `[masked]`, and a fill into one returns
+`verified: null` instead of reading the secret back.
+
+`fill` types the way a person does: a real click into the field, select-all
+(Cmd+A on macOS, Ctrl+A elsewhere), then a key press per character a US key
+types; any other character (Japanese, Vietnamese tone marks, Arabic, emoji) is
+committed whole, like an input method. Text over 256 characters is pasted in
+one piece. The receipt's `reason` says how: `typed_keys`, `pasted`, with
+`: focus_set_by_script` when the click did not focus the field. A native date
+control takes the date in its own or the locale's format (`2026-05-14`,
+`05/14/2026`, `14.05.2026`) and is typed segment by segment, then confirmed;
+time, month, week and datetime-local controls are set with input and change
+events. Their receipt carries `expected`, the value in the control's format,
+and verification compares against it. An unparseable value is refused as
+`unsupported_value` with an example of the format. Hosts that drive raw CDP
+can reuse `typeKeys(send, text)` and `SELECT_ALL_MODIFIER` from
+`interaction.ts`.
 
 ## Bounded decisions, including Jev
 

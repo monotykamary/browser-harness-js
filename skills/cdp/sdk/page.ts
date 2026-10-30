@@ -9,6 +9,8 @@ export type PageOptions = {
   sessionId: string; targetId?: string; allowedOrigins: string[]; input?: InteractionInput; timeoutMs?: number; ownsAttachment?: boolean;
   /** Host grant for credential and personal-data fields; see InteractionOptions.allowSensitive. */
   allowSensitive?: boolean;
+  /** Under that grant, observe sensitive values as `[masked]`; see InteractionOptions.maskSensitive. */
+  maskSensitive?: boolean;
 };
 export type CallOptions = { signal?: AbortSignal; timeoutMs?: number };
 export type ActionOptions = CallOptions & { verify?: (snapshot: PageSnapshot) => boolean };
@@ -60,7 +62,7 @@ export class Page {
 
   constructor(session: Session, options: PageOptions) {
     if (!options?.sessionId || options.sessionId.length > 256) throw new Error('Page requires an explicit sessionId');
-    this.guard = new InteractionController(session, { allowedOrigins: options.allowedOrigins, input: options.input ?? 'trusted', allowSensitive: options.allowSensitive });
+    this.guard = new InteractionController(session, { allowedOrigins: options.allowedOrigins, input: options.input ?? 'trusted', allowSensitive: options.allowSensitive, maskSensitive: options.maskSensitive });
     this.timeoutMs = options.timeoutMs ?? 10_000;
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 60_000) {
       this.guard.close(); throw new Error('timeoutMs must be 1..60000');
@@ -435,7 +437,11 @@ export class Page {
       try {
         if (expected !== undefined) {
           result.observation = await observe();
-          result.verified = result.observation.candidates.length === 1 && result.observation.candidates[0]?.value === expected;
+          // A native date or time control holds its own value format, which the guard reports as the expected value.
+          const want = (receipt as { expected?: string }).expected ?? expected;
+          // A masked (sensitive) field cannot be read back: its entry is not verified either way.
+          const shown = result.observation.candidates[0]?.value;
+          result.verified = shown === '[masked]' ? null : result.observation.candidates.length === 1 && shown === want;
         }
         result.snapshot = await this.snapshotInternal({}, signal);
         if (options.verify) result.verified = options.verify(result.snapshot) === true;

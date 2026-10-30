@@ -47,6 +47,7 @@ Use only when auto-detect picks the wrong browser or you already know the destin
 | `{ transport: 'cdp' }` | Skip the extension; remote-debugging auto-detect only. |
 | `{ profileDir }` | Target a specific running browser. Reads its `DevToolsActivePort` directly. OS-agnostic. |
 | `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>`. |
+| `{ wsUrl, headers }` | A hosted browser whose DevTools endpoint authenticates the WebSocket upgrade (`{ 'x-api-key': … }`). Reconnects send them again. |
 
 ```js
 await session.connect({ profileDir: '/Users/<you>/Library/Application Support/Google/Chrome' })

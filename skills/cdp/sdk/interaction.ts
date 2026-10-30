@@ -49,6 +49,8 @@ export type InteractionAction = {
 export type InteractionReceipt = {
   status: 'executed' | 'stale' | 'blocked' | 'outcome_unknown';
   reason?: string;
+  /** `type` into a native date or time control: the value it should hold, in the control's own format. */
+  expected?: string;
 };
 /**
  * `synthetic` (default) activates controls through the DOM: `element.click()` and a
@@ -69,6 +71,12 @@ export type InteractionOptions = {
    * the host process grants it, read at each observation.
    */
   allowSensitive?: boolean;
+  /**
+   * Under the sensitive grant, keep those fields' values in the page: they are offered and
+   * typed into, but observed as `[masked]` (empty stays empty), so a value typed into a
+   * password never crosses CDP and the host never verifies it by reading it back.
+   */
+  maskSensitive?: boolean;
 };
 
 type Options = { signal?: AbortSignal };
@@ -84,7 +92,7 @@ type RecordState = {
 };
 type PageReceipt =
   | InteractionReceipt
-  | { status: 'ready'; input: 'click' | 'type' | 'press'; x: number; y: number };
+  | { status: 'ready'; input: 'click' | 'type' | 'press'; x: number; y: number; keys?: string; expected?: string };
 
 // Controllers sharing a transport also share scope mutation queues.
 type ScopeQueue = { tail: Promise<unknown>; pending: number; transport: Set<Promise<unknown>> };
@@ -127,6 +135,7 @@ export class InteractionController {
   private readonly origins: string[];
   private readonly input: InteractionInput;
   private readonly allowSensitive?: boolean;
+  private readonly maskSensitive: boolean;
   private readonly records = new Map<string, RecordState>();
   private readonly epochs = new Map<string, symbol>();
   private readonly queues: Map<string, ScopeQueue>;
@@ -155,6 +164,10 @@ export class InteractionController {
       throw new Error('allowSensitive must be a boolean');
     }
     this.allowSensitive = options.allowSensitive;
+    if (options.maskSensitive !== undefined && typeof options.maskSensitive !== 'boolean') {
+      throw new Error('maskSensitive must be a boolean');
+    }
+    this.maskSensitive = options.maskSensitive ?? false;
     this.session = session;
     this.queues = scopeQueues.get(session) ?? new Map();
     scopeQueues.set(session, this.queues);
@@ -263,8 +276,8 @@ export class InteractionController {
         if (receipt?.status === 'ready') {
           if (this.input !== 'trusted') throw new Error('Unexpected trusted receipt');
           // The page rechecked the target at this point; dispatch without another round trip.
-          await this.dispatchInput(sid, record.generation, receipt, action, signal);
-          receipt = { status: 'executed', reason: 'dispatched_not_verified' };
+          const how = await this.dispatchInput(sid, record, index, receipt, action, signal);
+          receipt = { status: 'executed', reason: how ?? 'dispatched_not_verified', ...(receipt.expected !== undefined ? { expected: receipt.expected } : {}) };
         }
         if (!['executed', 'stale', 'blocked'].includes(receipt?.status)) throw new Error('Invalid action receipt');
         // Navigation may be a legitimate effect. Never turn a dispatched action into a retryable stale receipt.
@@ -345,29 +358,58 @@ export class InteractionController {
     return true;
   }
 
-  /** Real input at the point the page just revalidated (trusted mode only). */
+  /**
+   * Real input at the point the page just revalidated (trusted mode only). Typing is done the way a person does it:
+   * click into the field, select what is there (Ctrl/Cmd+A) and press one key per character, so widgets that listen
+   * for pointer or key events see them. Returns how the input went when it differs from plain dispatch.
+   */
   private async dispatchInput(
     sid: string,
-    generation: number | undefined,
-    ready: { input: 'click' | 'type' | 'press'; x: number; y: number },
+    record: RecordState,
+    index: number,
+    ready: { input: 'click' | 'type' | 'press'; x: number; y: number; keys?: string; expected?: string },
     action: { payload?: string | number },
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
+    const generation = record.generation;
     const send = (method: string, params: unknown) => this.call(sid, method, params, generation, signal);
-    if (ready.input === 'click') {
+    const guard = async (method: string, ...args: unknown[]) => this.value(await this.call(sid, 'Runtime.callFunctionOn', {
+      objectId: record.objectId,
+      functionDeclaration: `function(...args) { return this.${method}(...args); }`,
+      arguments: args.map(value => ({ value })),
+      returnByValue: true,
+    }, generation, signal));
+    const click = async () => {
       if (!Number.isFinite(ready.x) || !Number.isFinite(ready.y)) throw new Error('Invalid click point');
       const point = { x: ready.x, y: ready.y };
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
       await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
+    };
+    if (ready.input === 'click') {
+      await click();
+    } else if (ready.input === 'type' && ready.keys !== undefined) {
+      // A native date control: the page focused its first segment; type each segment, then confirm the value.
+      await typeKeys(send, ready.keys);
+      const confirmed = await guard('confirmValue', index, ready.expected);
+      return confirmed === 'set' ? 'typed_segments_not_accepted: value_set_synthetically' : confirmed === 'typed' ? 'typed_keys' : undefined;
     } else if (ready.input === 'type') {
-      // The page focused the target and selected its whole value; replace it.
       const text = action.payload as string;
-      if (text) await send('Input.insertText', { text });
-      else await pressKey(send, 'Delete');
+      await click();
+      const focused = await guard('ensureFocus', index);
+      if (focused === false) throw new Error('Field did not take focus');
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: SELECT_ALL_MODIFIER, commands: ['selectAll'] });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: SELECT_ALL_MODIFIER });
+      if (!text) await pressKey(send, 'Delete');
+      // A long text is pasted, as a person would paste it.
+      else if (text.length > MAX_TYPED_LENGTH) await send('Input.insertText', { text });
+      else await typeKeys(send, text);
+      const how = text.length > MAX_TYPED_LENGTH ? 'pasted' : 'typed_keys';
+      return focused === 'scripted' ? `${how}: focus_set_by_script` : how;
     } else {
       await pressKey(send, action.payload as string);
     }
+    return undefined;
   }
 
   private scopeId(scope: InteractionScope): string {
@@ -503,15 +545,16 @@ export class InteractionController {
         if (!targetObject) throw new Error('Target unavailable');
       }
       const sensitive = this.sensitiveGranted();
+      const mask = sensitive && this.maskSensitive;
       const evaluated = targetObject
         ? await this.call(sid, 'Runtime.callFunctionOn', {
           objectId: targetObject,
-          functionDeclaration: `function(origins, max, trusted, sensitive) { return (${projection})(origins, max, trusted, sensitive, this); }`,
-          arguments: [{ value: this.origins }, { value: max }, { value: this.input === 'trusted' }, { value: sensitive }],
+          functionDeclaration: `function(origins, max, trusted, sensitive, mask) { return (${projection})(origins, max, trusted, sensitive, mask, this); }`,
+          arguments: [{ value: this.origins }, { value: max }, { value: this.input === 'trusted' }, { value: sensitive }, { value: mask }],
           objectGroup: 'browser-harness-guard', awaitPromise: true,
         }, generation, signal)
         : await this.call(sid, 'Runtime.evaluate', {
-          expression: `(${projection})(${JSON.stringify(this.origins)}, ${max}, ${this.input === 'trusted'}, ${sensitive})`,
+          expression: `(${projection})(${JSON.stringify(this.origins)}, ${max}, ${this.input === 'trusted'}, ${sensitive}, ${mask})`,
           contextId: world.executionContextId, objectGroup: 'browser-harness-guard', awaitPromise: true,
         }, generation, signal);
       objectId = evaluated.result?.objectId;
@@ -574,6 +617,46 @@ const INVALIDATING_EVENTS = [
   'Inspector.targetCrashed',
 ];
 
+/** Text longer than this is pasted rather than typed key by key. */
+const MAX_TYPED_LENGTH = 256;
+/** Select all: Cmd+A on macOS, Ctrl+A elsewhere (CDP modifier bits: Control 2, Meta 4); the selectAll command backs it up. */
+export const SELECT_ALL_MODIFIER = process.platform === 'darwin' ? 4 : 2;
+const SHIFTED: Record<string, string> = { '~': '`', '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0', '_': '-', '+': '=', '{': '[', '}': ']', '|': '\\', ':': ';', '"': "'", '<': ',', '>': '.', '?': '/' };
+const PUNCTUATION: Record<string, { code: string; keyCode: number }> = {
+  '`': { code: 'Backquote', keyCode: 192 }, '-': { code: 'Minus', keyCode: 189 }, '=': { code: 'Equal', keyCode: 187 },
+  '[': { code: 'BracketLeft', keyCode: 219 }, ']': { code: 'BracketRight', keyCode: 221 }, '\\': { code: 'Backslash', keyCode: 220 },
+  ';': { code: 'Semicolon', keyCode: 186 }, "'": { code: 'Quote', keyCode: 222 }, ',': { code: 'Comma', keyCode: 188 },
+  '.': { code: 'Period', keyCode: 190 }, '/': { code: 'Slash', keyCode: 191 }, ' ': { code: 'Space', keyCode: 32 },
+};
+/** The US-keyboard key that types a character, or null when no single key does (then it is inserted as text, like an IME). */
+function keyFor(ch: string): { code: string; keyCode: number; shift: boolean } | null {
+  if (/^[a-z]$/.test(ch)) return { code: `Key${ch.toUpperCase()}`, keyCode: ch.toUpperCase().charCodeAt(0), shift: false };
+  if (/^[A-Z]$/.test(ch)) return { code: `Key${ch}`, keyCode: ch.charCodeAt(0), shift: true };
+  if (/^[0-9]$/.test(ch)) return { code: `Digit${ch}`, keyCode: ch.charCodeAt(0), shift: false };
+  const base = SHIFTED[ch];
+  if (base) {
+    const key = /^[0-9]$/.test(base) ? { code: `Digit${base}`, keyCode: base.charCodeAt(0) } : PUNCTUATION[base]!;
+    return { ...key, shift: true };
+  }
+  return PUNCTUATION[ch] ? { ...PUNCTUATION[ch]!, shift: false } : null;
+}
+const graphemes = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+/**
+ * One keydown (with its text, so keypress and input follow) and keyup per character. A character
+ * no single US key types (Japanese, Vietnamese with its tone marks, Arabic, an emoji) is inserted
+ * whole, one user-perceived character at a time, the way an input method commits it.
+ */
+export async function typeKeys(send: (method: string, params: unknown) => Promise<unknown>, text: string): Promise<void> {
+  const chars = graphemes ? Array.from(graphemes.segment(text), part => part.segment) : Array.from(text);
+  for (const ch of chars) {
+    const key = keyFor(ch);
+    if (!key) { await send('Input.insertText', { text: ch }); continue; }
+    const fields = { key: ch, code: key.code, windowsVirtualKeyCode: key.keyCode, ...(key.shift ? { modifiers: 8 } : {}) };
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', ...fields, text: ch, unmodifiedText: ch });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', ...fields });
+  }
+}
+
 async function pressKey(send: (method: string, params: unknown) => Promise<unknown>, name: string): Promise<void> {
   const key = PRESS_KEYS[name];
   if (!key) throw new Error('Unsupported key');
@@ -611,7 +694,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 // Bounded controls from the document and its open shadow roots, with an explicit role
 // allowlist, plus scrollable regions. Not a complete accessibility tree; trusted input
 // and sensitive fields are opt-in host grants.
-const projection = String.raw`async function(allowedOrigins, maxElements, trustedInput, allowSensitive, target) {
+const projection = String.raw`async function(allowedOrigins, maxElements, trustedInput, allowSensitive, maskSensitive, target) {
   const doc = document;
   const url = location.href;
   if (!allowedOrigins.includes(location.origin)) return { snapshot: { denied: true } };
@@ -630,6 +713,8 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   const TEXT_INPUT_TYPES = allowSensitive
     ? ['text', 'search', 'url', 'number', 'password', 'email', 'tel']
     : ['text', 'search', 'url', 'number'];
+  // Native date and time controls: a value field whose text a person types segment by segment.
+  const DATE_INPUT_TYPES = ['date', 'time', 'datetime-local', 'month', 'week'];
   const IDENTITY_ATTRIBUTES = ['id', 'name', 'type', 'href', 'role', 'for', 'form', 'action'];
   const BUTTON_INPUT_TYPES = ['button', 'submit', 'reset', 'checkbox', 'radio'];
   const GROUP_ROLES = ['dialog', 'alertdialog', 'grid', 'group', 'listbox', 'menu', 'menubar', 'tablist',
@@ -677,8 +762,16 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
       const hit = deepHit(x, y);
       if (hit && (hit === scope || scope.contains(hit) || composedContains(scope, hit))) return { x, y };
+      // A closed shadow root cannot be entered from a script, so the hit stops at its host. A hit on
+      // the host whose closed root composes the target is the target's own component, not a cover.
+      if (hit && !hit.shadowRoot && closedHostOf(scope, hit)) return { x, y };
     }
     return null;
+  };
+  const closedHostOf = (node, host) => {
+    if (typeof node.getRootNode !== 'function') return false;
+    for (let root = node.getRootNode(); root && root.host; root = root.host.getRootNode()) if (root.host === host) return true;
+    return false;
   };
   const byId = (el, id) => {
     const root = typeof el.getRootNode === 'function' ? el.getRootNode() : doc;
@@ -701,9 +794,8 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   };
 
   const sensitiveName = /pass(?:word|code|phrase)?|secret|token|api[\s_-]*key|auth|credential|security|user[\s_-]*name|login|full[\s_-]*name|first[\s_-]*name|last[\s_-]*name|surname|otp|one[\s_-]*time|mfa|2fa|\bpin\b|ssn|social[\s_-]*security|credit|card|cvv|cvc|iban|routing|account|bank|birth|\bdob\b|e[\s_-]*mail|phone|\btel\b|mobile|address|postal|zip/i;
-  // Without the host's grant, credential and personal-data fields are never offered.
-  const secure = el => {
-    if (allowSensitive) return false;
+  // Credential and personal-data fields, judged whatever the host granted.
+  const sensitiveField = el => {
     if (el.type === 'password' || el.hasAttribute('data-private') || el.hasAttribute('data-sensitive')) return true;
     const autocomplete = el.getAttribute('autocomplete') || '';
     if (tooLong(autocomplete, LIMITS.text)) return true;
@@ -722,7 +814,11 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     }
     return false;
   };
+  // Without the host's grant, credential and personal-data fields are never offered.
+  const secure = el => !allowSensitive && sensitiveField(el);
   const privateMarked = el => !allowSensitive && !!closestComposed(el, '[data-private], [data-sensitive]');
+  // Under the grant with masking, a sensitive field is offered and typed into, but its value never leaves the page.
+  const masked = el => maskSensitive && (sensitiveField(el) || !!closestComposed(el, '[data-private], [data-sensitive]'));
 
   // Native semantics: the implicit role and how the element is operated.
   const native = el => {
@@ -732,7 +828,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     if (tag === 'TEXTAREA') return { role: 'textbox', kind: 'value' };
     if (tag === 'SELECT') return el.multiple || el.size > 1 ? null : { role: 'combobox', kind: 'select' };
     if (tag !== 'INPUT') return null;
-    if (TEXT_INPUT_TYPES.includes(el.type)) return { role: el.type === 'search' ? 'searchbox' : 'textbox', kind: 'value' };
+    if (TEXT_INPUT_TYPES.includes(el.type) || DATE_INPUT_TYPES.includes(el.type)) return { role: el.type === 'search' ? 'searchbox' : 'textbox', kind: 'value' };
     if (!BUTTON_INPUT_TYPES.includes(el.type)) return null;
     return { role: ['checkbox', 'radio'].includes(el.type) ? el.type : 'button', kind: 'click' };
   };
@@ -851,7 +947,7 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     Object.defineProperty(result, 'fullName', { value: label.trim(), enumerable: false });
     if (kind === 'value') {
       if (tooLong(el.value, LIMITS.value)) return null;
-      result.value = el.value;
+      result.value = el.value && masked(el) ? '[masked]' : el.value;
       if (!el.readOnly) result.operations.push('type');
       if (role === 'combobox') result.operations.push('click');
     } else if (kind === 'editable') {
@@ -892,12 +988,13 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
       element.hidden || element.inert || element.getAttribute('aria-hidden') === 'true';
   };
 
-  // A native checkbox, radio or select made fully transparent and laid over its own drawn
-  // proxy (a styled ring or box with pointer-events:none) is what a user's click reaches.
-  // Only its own opacity is excused: any other hidden reason, or a hidden ancestor, still
-  // hides it, and the hit test must still land on it. Other transparent controls stay hidden.
+  // A native checkbox, radio, file input or select made fully transparent and laid over its
+  // own drawn proxy (a styled ring, box or upload button with pointer-events:none) is what a
+  // user's click reaches. Only its own opacity is excused: any other hidden reason, or a hidden
+  // ancestor, still hides it, and the hit test must still land on it. Other transparent
+  // controls stay hidden.
   const transparentNative = el => {
-    const native = (el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type)) || el.tagName === 'SELECT';
+    const native = (el.tagName === 'INPUT' && ['checkbox', 'radio', 'file'].includes(el.type)) || el.tagName === 'SELECT';
     if (!native) return false;
     const style = getComputedStyle(el);
     return Number(style.opacity) === 0 && style.display !== 'none' && style.visibility === 'visible' &&
@@ -1138,22 +1235,86 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
     element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   };
-  // Focus the target and select its whole content, so inserted text replaces it.
-  const focusForReplacement = element => {
-    HTMLElement.prototype.focus.call(element);
-    if ('select' in element && typeof element.select === 'function') {
-      element.select();
-    } else {
-      const range = doc.createRange();
-      range.selectNodeContents(element);
-      const selection = getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
+
+
+  // A date or time as the control's own value format, from that format or the locale's way of writing it.
+  const pad = (n, w) => String(n).padStart(w || 2, '0');
+  const dateOrder = () => {
+    try {
+      return new Intl.DateTimeFormat(navigator.language, { year: 'numeric', month: '2-digit', day: '2-digit' })
+        .formatToParts(new Date(2000, 10, 22)).map(part => part.type).filter(type => ['year', 'month', 'day'].includes(type));
+    } catch { return ['month', 'day', 'year']; }
+  };
+  const parseDate = text => {
+    let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
+    if (m) return { year: +m[1], month: +m[2], day: +m[3] };
+    m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(text);
+    if (m) {
+      const dayFirst = +m[1] > 12 || (+m[2] <= 12 && dateOrder()[0] === 'day');
+      return dayFirst ? { year: +m[3], month: +m[2], day: +m[1] } : { year: +m[3], month: +m[1], day: +m[2] };
     }
+    if (!/[a-z]/i.test(text)) return null;
+    const parsed = new Date(text);
+    return isNaN(parsed.getTime()) ? null : { year: parsed.getFullYear(), month: parsed.getMonth() + 1, day: parsed.getDate() };
+  };
+  const parseTime = text => {
+    const m = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap]\.?m\.?)?$/i.exec(text.trim());
+    if (!m) return null;
+    let hour = +m[1];
+    if (m[3]) hour = (hour % 12) + (/^p/i.test(m[3]) ? 12 : 0);
+    return hour < 24 && +m[2] < 60 ? pad(hour) + ':' + m[2] : null;
+  };
+  const validDate = d => d && d.month >= 1 && d.month <= 12 && d.day >= 1 && d.day <= 31;
+  const nativeValue = (type, text) => {
+    text = String(text).trim();
+    if (type === 'date') { const d = parseDate(text); return validDate(d) ? pad(d.year, 4) + '-' + pad(d.month) + '-' + pad(d.day) : null; }
+    if (type === 'time') return parseTime(text);
+    if (type === 'month') {
+      const m = /^(\d{4})-(\d{1,2})$/.exec(text) || /^(\d{1,2})[\/.\-](\d{4})$/.exec(text);
+      if (!m) return null;
+      const [year, month] = m[1].length === 4 ? [+m[1], +m[2]] : [+m[2], +m[1]];
+      return month >= 1 && month <= 12 ? pad(year, 4) + '-' + pad(month) : null;
+    }
+    if (type === 'week') return /^\d{4}-W\d{2}$/.test(text) ? text : null;
+    const [date, time] = text.split(/[T ]+(?=\d{1,2}:)/);
+    const d = date && parseDate(date); const t = time && parseTime(time);
+    return validDate(d) && t ? pad(d.year, 4) + '-' + pad(d.month) + '-' + pad(d.day) + 'T' + t : null;
+  };
+  // The keys a person types into a date control's segments, in the locale's order (each segment filled, so focus advances).
+  const dateKeys = value => {
+    const [year, month, day] = value.split('-');
+    const parts = { year, month, day };
+    return dateOrder().map(type => parts[type]).join('');
+  };
+  // Whether focus is on the element or inside it; its own root sees focus even inside a closed shadow root.
+  const activeIn = element => {
+    const own = element.getRootNode().activeElement;
+    if (own && (own === element || element.contains(own))) return true;
+    let active = doc.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return active === element || (active !== null && element.contains(active));
   };
 
   let consumed = false;
-  return { snapshot, act(index, operation, payload, trusted) {
+  return { snapshot,
+  /** After a trusted click into a field: focus it from script only if the click did not (reported as 'scripted'). */
+  ensureFocus(index) {
+    const element = refs[index] && refs[index].element;
+    if (!element || !element.isConnected) return false;
+    if (activeIn(element)) return true;
+    HTMLElement.prototype.focus.call(element);
+    return activeIn(element) ? 'scripted' : false;
+  },
+  /** After typing a date control's segments: the typed value stands, or the value is set with input and change events. */
+  confirmValue(index, expected) {
+    const element = refs[index] && refs[index].element;
+    if (!element || !element.isConnected || !('value' in element) || !DATE_INPUT_TYPES.includes(element.type)) return null;
+    if (element.value === expected) return 'typed';
+    setValue(element, expected);
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return element.value === expected ? 'set' : 'failed';
+  },
+  act(index, operation, payload, trusted) {
     if (consumed) return { status: 'stale', reason: 'replayed' };
     consumed = true;
     if (!allowedOrigins.includes(location.origin)) return { status: 'blocked', reason: 'origin_denied' };
@@ -1175,10 +1336,21 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
       // Synthetic DOM activation, not a trusted pointer event. No scrolling/focus side effects first.
       HTMLElement.prototype.click.call(element);
     } else if (operation === 'type' && typeof payload === 'string' && payload.length <= LIMITS.value) {
-      if (trusted === true && trustedInput) {
-        focusForReplacement(element);
-        return ready('type');
+      // A native date or time control takes its own value format, whichever way the text was written.
+      if (DATE_INPUT_TYPES.includes(element.type)) {
+        const value = payload === '' ? '' : nativeValue(element.type, payload);
+        if (value === null) return { status: 'blocked', reason: 'unsupported_value: this ' + element.type + ' control takes a ' + element.type + ' such as ' + ({ date: '2026-05-14', time: '14:30', month: '2026-05', week: '2026-W20', 'datetime-local': '2026-05-14T14:30' })[element.type] };
+        if (trusted === true && trustedInput && element.type === 'date' && value) {
+          // Focus lands on the first segment; the host types each segment like a person.
+          HTMLElement.prototype.focus.call(element);
+          return { ...ready('type'), keys: dateKeys(value), expected: value };
+        }
+        setValue(element, value);
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        return { status: 'executed', reason: 'value_set_synthetically: native ' + element.type + ' control', expected: value };
       }
+      // The host clicks into the field, selects what is there and types over it, like a person.
+      if (trusted === true && trustedInput) return ready('type');
       if (!('value' in element)) return { status: 'blocked', reason: 'unsupported_action' };
       setValue(element, payload);
     } else if (operation === 'select' && Number.isInteger(payload) && payload >= 0 &&
