@@ -1,0 +1,25 @@
+{
+  "id": "discord-com",
+  "name": "Discord web client (read-only DM list and history)",
+  "domains": ["discord.com"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "listDms": {
+      "description": "Open https://discord.com/channels/@me in a NEW background target, poll until the DM sidebar renders, read every a[href*=\"/channels/@me/\"] and split its aria-label into name and kind. Read-only; closes its tab.",
+      "path": "tools/discord-com.mjs",
+      "callable": "listDms",
+      "args": {},
+      "returns": {"type": "array", "description": "[{name, channelId, kind:\"dm\"|\"group\"}]; {stop:\"not-signed-in\"|\"dm-list-not-rendered\", targetId, href} when the list never rendered"}
+    },
+    "readDm": {
+      "description": "Open /channels/@me/<channelId> in a NEW background target, poll until li[id^=chat-messages-] exists (up to 60s), then scroll the message scroller to the top, 2.5s per step, until the count stops growing, the \"beginning of your direct message history\" text appears, or maxScrolls is hit. Read-only DOM reading; never sends, never touches the token.",
+      "path": "tools/discord-com.mjs",
+      "callable": "readDm",
+      "args": {
+        "channelId": {"type": "string", "required": true, "description": "digits from listDms"},
+        "maxScrolls": {"type": "number", "required": false, "description": "default 25"}
+      },
+      "returns": {"type": "object", "description": "{channelId, scrolls, reachedStart, rows:[{time (ISO datetime), author (carried forward over continuation messages), text, images}]}; {stop:\"not-signed-in\"|\"messages-not-rendered\"|\"scroller-not-found\", targetId} otherwise"}
+    }
+  }
+}
