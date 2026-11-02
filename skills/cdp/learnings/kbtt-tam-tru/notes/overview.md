@@ -53,6 +53,10 @@ Field ids:
 - **Locked Mac screen.** Every tab reports `visibilityState` hidden. Modals, hover menus and pickers stay dead. Fix it with `Emulation.setFocusEmulationEnabled({enabled:true})` on the target.
 - **Background tabs throttle `setTimeout`.** Never await an in-page sleep. Split click and read into separate evaluate calls.
 
+- **History filters default to yesterday and today.** Older rows show "Trống" until you widen "Ngày bắt đầu". In the open range picker, a JS `.click()` on `td[title="YYYY-MM-DD"] .ant-picker-cell-inner` picks a date reliably. Click the start, then the end, then "Tìm kiếm".
+- **The extension relay cannot attach to this site's tabs.** It fails with "Cannot access a chrome-extension:// URL of different extension". Use a separate `new Session()` connected to the remote-debugging `wsUrl`.
+- **A confirmed row reads "Đã xác nhận".** Its printout then adds "Ngày xác nhận".
+
 ## Print
 
 The history row's printer button opens a modal "XEM TRƯỚC". It holds a `blob:` iframe with a 1-page PDF. Run `fetch(iframe.src)` in the page and base64 the bytes out. The PDF shows the facility address and ward. Check it before you hand it to anyone.
