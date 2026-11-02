@@ -14,6 +14,18 @@
         "media": {"type": "array", "required": false, "description": "Absolute file paths to attach. Images, gif, and video are accepted by the composer's file input."}
       },
       "returns": {"type": "object", "description": "{posted: true, url} on success (url is null when the virtualized feed hides the permalink); {posted: false, reason} on refusal (logged out, composer did not open, no Post button, text missing after reload)."}
+    },
+    "listPageReels": {
+      "description": "List every reel id on a Facebook Page's reels tab through the logged-in session. Opens the URL in a background tab (never brought to front), forces the hidden tab to lazy-load, scrolls with wheel events until the count stops growing, then closes the tab. Use it to feed a whole channel into a transcription step.",
+      "path": "tools/reels.mjs",
+      "callable": "listPageReels",
+      "args": {
+        "pageUrl": {"type": "string", "required": true, "description": "Page reels tab URL, e.g. https://www.facebook.com/61563721943351/reels/."},
+        "maxRounds": {"type": "integer", "required": false, "description": "Upper bound on scroll rounds. Default 120."},
+        "stallRounds": {"type": "integer", "required": false, "description": "Stop after this many rounds with an unchanged count. Default 10."},
+        "settleMs": {"type": "integer", "required": false, "description": "Wait after each scroll, in ms. Default 2000."}
+      },
+      "returns": {"type": "object", "description": "{ids, urls, count, rounds, stalled} on success (urls are https://www.facebook.com/reel/<id>/; stalled is true when the loop ended on the unchanged-count rule, false when it hit maxRounds); {ids: [], reason} when logged out or no reels."}
     }
   }
 }
