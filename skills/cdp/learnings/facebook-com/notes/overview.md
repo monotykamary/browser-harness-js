@@ -35,3 +35,24 @@ Learned by hand-driving a real post on a managed Page:
 - **Personal profile:** unverified. The same dialog shape appears on a profile
   URL, so the tool should work with `pageUrl` set to the profile; confirm by
   hand once before relying on it.
+
+## Listing a Page's reels (`listPageReels` node-tool)
+
+Open `https://www.facebook.com/<page-id>/reels/` and collect unique ids from
+`a[href*="/reel/"]` (`/reel/(\d+)`). The grid lazy-loads, so the tool scrolls
+until the count is unchanged for ~10 rounds (or a max-rounds bound).
+
+- **Hidden-tab lazy-load trap.** A background tab (`Target.createTarget`
+  with `background: true`, the right choice so the user's window never moves)
+  is "hidden" to the page: Facebook's lazy loader never fires. Plain
+  `window.scrollTo` stalled at 11 ids. Fix, all three needed: call
+  `Emulation.setFocusEmulationEnabled({enabled: true})` and
+  `Page.setWebLifecycleState({state: 'active'})` after `session.use(targetId)`,
+  then scroll with real wheel events (`Input.dispatchMouseEvent`,
+  `type: 'mouseWheel'`, `deltaY: 3000`) as well as `scrollBy`. That reached
+  ~150 ids on a real Page. Never `Page.bringToFront`.
+- **Scroll the last reel link into view each round**, then wheel, then wait
+  ~2s; the next batch is keyed off the last anchor reaching the viewport.
+- **Logged out:** `input[name=email]` is present; the tool returns
+  `{ids: [], reason: "logged out"}`. Zero reels returns `{ids: [], reason}` too.
+- **Close the tab** in `finally` so the user's tab count is unchanged.
