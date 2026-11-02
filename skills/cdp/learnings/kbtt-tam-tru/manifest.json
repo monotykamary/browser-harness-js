@@ -2,5 +2,50 @@
   "id": "kbtt-tam-tru",
   "name": "Bộ Công an foreigner tạm trú declaration portal (KBTT)",
   "domains": ["tbltkbtt.bocongan.gov.vn", "kbtt.xuatnhapcanh.gov.vn"],
-  "notes": ["notes/overview.md"]
+  "notes": ["notes/overview.md"],
+  "browserTools": {
+    "fill_login": {
+      "description": "Set the Ant Design login inputs form_item_username and form_item_password with the native value setter plus input/change events. Returns booleans only, never echoes a value; the caller supplies values from its own secret store.",
+      "path": "browser-tools/fill-login.js",
+      "callable": "fillLogin",
+      "args": {
+        "username": {"type": "string", "required": true},
+        "password": {"type": "string", "required": true}
+      },
+      "returns": {"type": "object", "description": "{username: boolean, password: boolean}"}
+    },
+    "captcha_image": {
+      "description": "Base64 (no data: prefix) of the visible data:image captcha img wider than 100px, or null when none is on the page.",
+      "path": "browser-tools/captcha-image.js",
+      "callable": "captchaImage",
+      "args": {},
+      "returns": {"type": "string|null", "description": "base64 image bytes, or null"}
+    },
+    "history_range": {
+      "description": "On history-declare-manager: open the range picker on the \"Ngày bắt đầu\" input, click the from and to date cells (paging months as needed), then click \"Tìm kiếm\". No in-page timers.",
+      "path": "browser-tools/history-range.js",
+      "callable": "historyRange",
+      "args": {
+        "from": {"type": "string", "required": true, "description": "YYYY-MM-DD"},
+        "to": {"type": "string", "required": true, "description": "YYYY-MM-DD"}
+      },
+      "returns": {"type": "object", "description": "{ok, values:[start,end]} or {ok:false, step, error}"}
+    },
+    "history_rows": {
+      "description": "History table rows (.ant-table-tbody tr) as arrays of cell text, skipping the empty-state row.",
+      "path": "browser-tools/history-rows.js",
+      "callable": "historyRows",
+      "args": {},
+      "returns": {"type": "array", "description": "[[cell text, ...], ...]"}
+    },
+    "print_row_pdf": {
+      "description": "Click the print button on the first history row whose text contains match, then read the blob PDF from the XEM TRƯỚC modal and close it. Re-callable: returns {status:\"pending\"} until the iframe exists; call again with the same args.",
+      "path": "browser-tools/print-row-pdf.js",
+      "callable": "printRowPdf",
+      "args": {
+        "match": {"type": "string", "required": true, "description": "substring of the row text"}
+      },
+      "returns": {"type": "object", "description": "{status:\"done\", base64, bytes, type} | {status:\"pending\"} | {status:\"error\", error}"}
+    }
+  }
 }

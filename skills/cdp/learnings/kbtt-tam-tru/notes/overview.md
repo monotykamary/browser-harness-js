@@ -1,6 +1,6 @@
 # kbtt-tam-tru (tbltkbtt.bocongan.gov.vn)
 
-The Bộ Công an portal where a lodging facility declares a foreigner's temporary residence (khai báo tạm trú). Notes only: no node or browser tools. Drive it with plain `session` calls. The old host kbtt.xuatnhapcanh.gov.vn redirects here. The unified site went live on 2026-05-21. Old accounts keep their username, now with a province prefix such as `hcm_`.
+The Bộ Công an portal where a lodging facility declares a foreigner's temporary residence (khai báo tạm trú). Browser tools cover login fill, captcha, history and print (list below); everything else is plain `session` calls. The old host kbtt.xuatnhapcanh.gov.vn redirects here. The unified site went live on 2026-05-21. Old accounts keep their username, now with a province prefix such as `hcm_`.
 
 The site is a Vue 3 + Ant Design Vue SPA. Facts below were verified live on 2026-10-31.
 
@@ -11,6 +11,20 @@ The site is a Vue 3 + Ant Design Vue SPA. Facts below were verified live on 2026
 - A new account gets a 3-step setup wizard on first login. Step 2 shows only a QR, with no text key.
 - Decode the QR in the page: `new BarcodeDetector({formats:['qr_code']}).detect(img)`. The result holds the `otpauth` URI.
 - Store that URI in the password manager at once. Never print it or log it.
+
+## Browser tools
+
+Run in the page via `learnings("kbtt-tam-tru", "<tool>", args)`.
+
+| Tool | Use |
+| --- | --- |
+| `fill_login` | `{username, password}` into the Ant inputs; returns booleans only |
+| `captcha_image` | base64 of the visible captcha, or null |
+| `history_range` | `{from, to}` as YYYY-MM-DD, then Tìm kiếm; returns the picker values |
+| `history_rows` | table rows as arrays of cell text |
+| `print_row_pdf` | `{match}`; returns base64 PDF, or `{status:"pending"}` (call again) |
+
+The TOTP step stays with the caller: focus `form_item_authenticator`, type the code with trusted `Input.insertText`. Credentials come from the caller's secret store, never from this repo.
 
 ## Routes
 
