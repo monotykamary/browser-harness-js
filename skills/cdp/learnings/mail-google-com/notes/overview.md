@@ -139,6 +139,15 @@ await learnings("mail-google-com", "saveDraftNow", { targetId: draft.targetId })
 - **The header did not expand on a send-as alias.** The real click on the To row left the From line at width 0, so `prepareDraftAs` stopped at `from-line-not-found`. A synthetic `mousedown`/`mouseup`/`click` on the hidden `[role=option]` switched From three times out of three that day. It is now the fallback, and the `input[name=from]` check still guards it.
 - **Proven live end to end** for the first time: `han@console.so` alias, signature "Console Labs" present, body escaped above it. No send.
 
+## Concurrency
+
+The harness REPL server is one long-lived process shared by every Claude session on the machine, and its active-session pointer is global. A tool that moved that pointer to its tab and then made plain `session.X(...)` calls raced other sessions: one session's `Page.navigate` landed in another session's draft tab, and `setBodyAboveSignature`, `replaceAttachments` and `replyInThread` hung or acted on the wrong tab.
+
+- **Fix:** every tool attaches to its own target with `Target.attachToTarget({ targetId, flatten: true })` and sends each Page/DOM/Input/Runtime call to that explicit `sessionId` through `ctx.cdp(sessionId, method, params)`. The file never moves the active-session pointer. `Target.*` calls are browser-level and never read it.
+- **Rule:** a caller passes its own `targetId` and never relies on the active tab. The tools that take a `targetId` (`replaceDraftBody`, `pickSignature`, `setBodyAboveSignature`, `replaceAttachments`, `saveDraftNow`, `sendPreparedDraft`) attach to that exact tab; the tools that open their own tab keep the id they created.
+- **Focus:** only `replyInThread` and `forwardMessage` call `Target.activateTarget`, because `Input.insertText` into a background tab lands late. The read-only verbs stay in background tabs.
+- **Gotcha:** a draft edit made from a stale tab can overwrite the operator's own edit in that draft. Reload the draft (`Page.reload`) before editing a draft the operator may have touched.
+
 ## Provenance
 
 2026-09-27, live session sending as a Google Group send-as alias. Driven by hand through
