@@ -8,8 +8,16 @@ const HOST = "accounts.delawareregisteredagent.com";
 const HOME = `https://${HOST}/`;
 const API = "/api/v3/client/";
 
-async function evaluate(ctx, expression) {
-  const { result, exceptionDetails } = await ctx.session.Runtime.evaluate({ expression, returnByValue: true, awaitPromise: true });
+// The REPL server is shared by every session on the machine, and session.use moves one global
+// active-tab pointer, so two callers steal each other's tab. Every call here goes through an
+// explicit sessionId instead (same rule as learnings/mail-google-com, "Concurrency").
+async function attachTab(ctx, targetId) {
+  const { sessionId } = await ctx.session._call("Target.attachToTarget", { targetId, flatten: true });
+  return { sid: sessionId, send: (method, params = {}) => ctx.cdp(sessionId, method, params) };
+}
+
+async function evaluate(tab, expression) {
+  const { result, exceptionDetails } = await tab.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (exceptionDetails) throw new Error(exceptionDetails.text || (exceptionDetails.exception || {}).description || "Runtime.evaluate failed");
   return result ? result.value : undefined;
 }
@@ -25,16 +33,16 @@ async function pin(ctx) {
   const { targetInfos } = await ctx.session.Target.getTargets();
   const open = targetInfos.find((t) => t.type === "page" && new URL(t.url || "about:blank").host === HOST);
   if (open) {
-    await ctx.session.use(open.targetId);
-    return { targetId: open.targetId, created: false };
+    const tab = await attachTab(ctx, open.targetId);
+    return { ...tab, targetId: open.targetId, created: false };
   }
   const { targetId } = await ctx.session.Target.createTarget({ url: HOME, background: true });
-  await ctx.session.use(targetId);
+  const tab = await attachTab(ctx, targetId);
   for (let i = 0; i < 20; i++) {
     await wait(1500);
     try {
-      const res = await evaluate(ctx, `location.host===${JSON.stringify(HOST)} ? ${getExpr(API + "companies?limit=1&offset=0")} : null`);
-      if (res && res.status === 200) return { targetId, created: true };
+      const res = await evaluate(tab, `location.host===${JSON.stringify(HOST)} ? ${getExpr(API + "companies?limit=1&offset=0")} : null`);
+      if (res && res.status === 200) return { ...tab, targetId, created: true };
     } catch (e) { /* execution context destroyed mid-redirect: keep polling */ }
   }
   ctx.session.Target.closeTarget({ targetId }).catch(() => {});
@@ -44,26 +52,26 @@ async function pin(ctx) {
 async function withPortal(ctx, fn) {
   const tab = await pin(ctx);
   try {
-    return await fn();
+    return await fn(tab);
   } finally {
     if (tab.created) ctx.session.Target.closeTarget({ targetId: tab.targetId }).catch(() => {});
   }
 }
 
-async function apiGet(ctx, path) {
-  const res = await evaluate(ctx, getExpr(API + path));
+async function apiGet(tab, path) {
+  const res = await evaluate(tab, getExpr(API + path));
   if (res.status === 401 || res.status === 403) throw new Error(`portal API ${res.status}: not signed in`);
   if (res.status !== 200 || !res.json) throw new Error(`portal API ${res.status} for ${path.split("?")[0]}`);
   return res.json.result;
 }
 
-async function fetchAllDocuments(ctx) {
-  return apiGet(ctx, "client_documents?limit=200&offset=0");
+async function fetchAllDocuments(tab) {
+  return apiGet(tab, "client_documents?limit=200&offset=0");
 }
 
 export async function listDocuments(ctx) {
-  return withPortal(ctx, async () => {
-    const docs = await fetchAllDocuments(ctx);
+  return withPortal(ctx, async (tab) => {
+    const docs = await fetchAllDocuments(tab);
     return docs.map((d) => ({
       id: d.id,
       title: d.title,
@@ -75,21 +83,21 @@ export async function listDocuments(ctx) {
 }
 
 export async function listCompanies(ctx) {
-  return withPortal(ctx, () => apiGet(ctx, "companies?limit=500&offset=0"));
+  return withPortal(ctx, (tab) => apiGet(tab, "companies?limit=500&offset=0"));
 }
 
 // Presigned page-image URLs for one document (docId) or all of them. The loop runs inside the page
 // and stores its result on window.__draPages; a long awaited Runtime.evaluate can make the CLI print
 // nothing, so this starts it and polls with short evaluates. URLs are short-lived: download at once.
 export async function pageUrls(ctx, { docId, timeoutMs = 300000 } = {}) {
-  return withPortal(ctx, async () => {
-    let docs = await fetchAllDocuments(ctx);
+  return withPortal(ctx, async (tab) => {
+    let docs = await fetchAllDocuments(tab);
     if (docId) docs = docs.filter((d) => String(d.id) === String(docId));
     if (docId && !docs.length) return { stop: "doc-not-found" };
     const jobs = [];
     for (const d of docs) (d.pages || []).forEach((p, i) => jobs.push({ docId: d.id, title: d.title, i, pageId: p }));
 
-    await evaluate(ctx, `(()=>{
+    await evaluate(tab, `(()=>{
       const jobs=${JSON.stringify(jobs)};
       window.__draPages={done:false,out:[],err:0};
       let next=0;
@@ -104,9 +112,9 @@ export async function pageUrls(ctx, { docId, timeoutMs = 300000 } = {}) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       await wait(1500);
-      if (await evaluate(ctx, "window.__draPages.done")) break;
+      if (await evaluate(tab, "window.__draPages.done")) break;
     }
-    const state = await evaluate(ctx, "window.__draPages");
+    const state = await evaluate(tab, "window.__draPages");
     if (!state.done) return { stop: "timeout", partial: state.out.length, expected: jobs.length };
     state.out.sort((a, b) => String(a.docId).localeCompare(String(b.docId)) || a.i - b.i);
     return state.out;
