@@ -1,8 +1,9 @@
 // learnings/app-notion-com/tools/workspace.test.mjs
-// Fake ctx, no browser: checks the top-level-page permission guard and the unwrap helpers.
+// Fake ctx, no browser: checks the top-level-page permission guard, the unwrap helpers and the page property history parser.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { saveTransaction, listSpaces, getRecords, unwrap } from "./workspace.mjs";
+import { summarizeHistory, pagePropertyHistory } from "./pages.mjs";
 
 // Fake ctx: one app.notion.com tab; Runtime.evaluate records the expression and returns `reply`.
 function fakeCtx(reply = {}) {
@@ -78,4 +79,49 @@ test("listSpaces dedupes spaces across users", async () => {
 test("getRecords maps id to the unwrapped value, null when missing", async () => {
   const ctx = fakeCtx({ recordMap: { block: { a: { value: { value: { id: "a" }, role: "editor" } } } } });
   assert.deepEqual(await getRecords(ctx, { table: "block", ids: ["a", "z"], spaceId: "s1" }), { a: { id: "a" }, z: null });
+});
+
+const U1 = "11111111-1111-1111-1111-111111111111";
+const BOT = "39c64b29-b84c-8183-0000-000000000000";
+const PAGE = "40b64b29-b84c-8183-8782-fde586c4f4a6";
+const activityFixture = () => ({
+  activity: {
+    a1: { value: { value: { type: "block-edited", start_time: 1000, edits: [
+      { authors: [{ id: U1 }], block_data: { before: { block_value: { properties: { LnUY: [["Draft"]] } } }, after: { block_value: { properties: { LnUY: [["Pending Approval"]] } } } } },
+    ] } } },
+    a2: { value: { type: "block-edited", start_time: "2000", edits: [
+      { authors: [{ id: BOT }], block_data: { before: { block_value: { properties: { LnUY: [["Pending Approval"]], title: [["Same"]] } } }, after: { block_value: { properties: { LnUY: [["Approved"]], title: [["Same"]], dUe8: [["‣", [["d", { start_date: "2026-11-03" }]]]] } } } } },
+    ] } },
+  },
+  users: { [U1]: { value: { value: { id: U1, name: "Han" } } } },
+  schema: { LnUY: "Status" },
+});
+
+test("summarizeHistory: newest first, names for users, raw id for bots, only changed keys", () => {
+  const rows = summarizeHistory(activityFixture());
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], { time: "1970-01-01T00:00:02.000Z", type: "block-edited", authors: [BOT],
+    changes: [{ prop: "Status", before: "Pending Approval", after: "Approved" }, { prop: "dUe8", before: null, after: "2026-11-03" }] });
+  assert.deepEqual(rows[1].authors, ["Han"]);
+  assert.deepEqual(rows[1].changes, [{ prop: "Status", before: "Draft", after: "Pending Approval" }]);
+});
+
+test("summarizeHistory: empty input gives an empty list", () => {
+  assert.deepEqual(summarizeHistory({}), []);
+  assert.deepEqual(summarizeHistory(), []);
+});
+
+test("pagePropertyHistory pins to the dashed id, calls getActivityLog, summarizes the reply", async () => {
+  const ctx = fakeCtx(activityFixture());
+  const rows = await pagePropertyHistory(ctx, { pageId: PAGE.replace(/-/g, "") });
+  assert.equal(ctx.sent.length, 1);
+  assert.match(ctx.sent[0], /getActivityLog/);
+  assert.ok(ctx.sent[0].includes(JSON.stringify(PAGE)));
+  assert.equal(rows[0].authors[0], BOT);
+});
+
+test("pagePropertyHistory rejects a malformed id before touching the browser", async () => {
+  const ctx = fakeCtx();
+  await assert.rejects(() => pagePropertyHistory(ctx, { pageId: "not-a-uuid" }), /32-hex/);
+  assert.equal(ctx.sent.length, 0);
 });

@@ -171,3 +171,74 @@ const r = await post("saveTransactionsFanout", {requestId: uuid(), transactions:
 const e = err(r);
 return {ok: !e, error: e, ops: ops.length, newIds};`);
 }
+
+const dashUuid = (id) => {
+  const h = String(id || "").replace(/-/g, "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(h)) throw new Error("pagePropertyHistory: pageId must be a 32-hex uuid, dashed or not");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
+const rec = (r) => (r && r.value && r.value.value) || (r && r.value) || null;
+
+// Rich text -> plain string. Dates give start ("start -> end"), people the user name or "@<id>", relations "rel:<pageId>".
+function plain(value, names) {
+  return (value || []).map((seg) => {
+    const a = (seg[1] || []).find((n) => ["d", "u", "p"].includes(n[0]));
+    if (!a) return seg[0];
+    if (a[0] === "d") return a[1].start_date + (a[1].end_date ? " -> " + a[1].end_date : "");
+    if (a[0] === "u") return names[a[1]] || "@" + a[1];
+    return "rel:" + a[1];
+  }).join("");
+}
+
+// Pure: raw getActivityLog recordMap slices -> [{time, type, authors, changes:[{prop, before, after}]}], newest first.
+// users: recordMap.notion_user; schema: {shortKey: propertyName} (optional, an unknown key is reported as is).
+// An author absent from users (a bot: integration or automation) stays as its raw id.
+export function summarizeHistory({ activity = {}, users = {}, schema = {} } = {}) {
+  const names = {};
+  for (const [id, r] of Object.entries(users)) { const u = rec(r); if (u && u.name) names[id] = u.name; }
+  const out = [];
+  for (const r of Object.values(activity)) {
+    const a = rec(r);
+    if (!a) continue;
+    const authors = [], changes = [];
+    for (const e of a.edits || []) {
+      for (const au of e.authors || []) {
+        const who = names[au.id] || au.id;
+        if (!authors.includes(who)) authors.push(who);
+      }
+      const bv = (side) => (e.block_data && e.block_data[side] && e.block_data[side].block_value && e.block_data[side].block_value.properties) || {};
+      const before = bv("before"), after = bv("after");
+      for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        if (JSON.stringify(before[k]) === JSON.stringify(after[k])) continue;
+        changes.push({ prop: schema[k] || k, before: k in before ? plain(before[k], names) : null, after: k in after ? plain(after[k], names) : null });
+      }
+    }
+    const start = Number(a.start_time || a.end_time) || 0; // Notion sends ms as a string
+    out.push({ start, time: new Date(start).toISOString(), type: a.type, authors, changes });
+  }
+  return out.sort((x, y) => y.start - x.start).map(({ start, ...row }) => row);
+}
+
+// Who changed which property of a page or database row, and when. The public API's last_edited_by is
+// overwritten by automations, the activity log is not. Read-only.
+// Property keys are resolved to names through the parent collection schema when the row has one.
+export async function pagePropertyHistory(ctx, { pageId, limit = 50 } = {}) {
+  const id = dashUuid(pageId);
+  const raw = await run(ctx, `
+const id = ${JSON.stringify(id)};
+const b = await post("syncRecordValues", {requests: [{pointer: {table: "block", id}, version: -1}]});
+const be = err(b); if (be) throw new Error("syncRecordValues failed: " + be);
+const br = b.recordMap && b.recordMap.block && b.recordMap.block[id];
+const blk = (br && br.value && br.value.value) || (br && br.value) || null;
+if (!blk || !blk.space_id) throw new Error("block " + id + " not found or not readable");
+const spaceId = blk.space_id;
+const log = await post("getActivityLog", {spaceId, navigableBlockId: id, limit: ${Number(limit)}});
+const le = err(log); if (le) throw new Error("getActivityLog failed: " + le);
+const map = log.recordMap || {};
+let schema = {};
+if (blk.parent_table === "collection") {
+  try { const c = (await getRecs("collection", [blk.parent_id], spaceId))[blk.parent_id]; schema = Object.fromEntries(Object.entries((c && c.schema) || {}).map(([k, s]) => [k, s.name])); } catch (e) { /* names are a bonus */ }
+}
+return {activity: map.activity || {}, users: map.notion_user || {}, schema};`);
+  return summarizeHistory(raw);
+}

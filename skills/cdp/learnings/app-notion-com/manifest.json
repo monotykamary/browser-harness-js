@@ -294,6 +294,26 @@
         "type": "object",
         "description": "{ok,error,ops,newIds{oldId:newId},dryRun?}"
       }
+    },
+    "page_property_history": {
+      "description": "Read-only. Who changed which property of a page or database row, and when, from the internal activity log (getActivityLog). Use it when the public API last_edited_by is overwritten by an automation actor. Property keys resolve to names through the parent collection schema.",
+      "path": "tools/pages.mjs",
+      "callable": "pagePropertyHistory",
+      "args": {
+        "pageId": {
+          "type": "string",
+          "required": true,
+          "description": "page or row block id, dashed or undashed uuid"
+        },
+        "limit": {
+          "type": "integer",
+          "description": "activity entries to fetch, default 50"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "[{time (ISO), type, authors[name|raw id], changes[{prop,before,after}]}] newest first; before/after null when the property was absent; bot authors (integrations, automations) are not in notion_user and stay raw ids"
+      }
     }
   }
 }

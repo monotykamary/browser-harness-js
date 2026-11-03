@@ -50,6 +50,7 @@ Endpoints proven: `getSpaces`, `syncRecordValuesSpace`, `queryCollection`, `sear
 `readCollection({pageId, spaceId?, limit?})`: schema `[{name,type}]` and rows as `{_id, <property name>: plain value}`. Read-only.
 `createPage({spaceId, parentAfter?, title, blocks, editors})`: a top-level page plus blocks in one transaction. `blocks` is `[[type, text]]`, or `["table", [[cell,...],...]]` with the first row as header. `editors` is required.
 `recreateRows({pageId, spaceId?, changes:[{rowId, set:{Property: value}}], dryRun?})`: row property updates. Take `rowId` from `readCollection` `_id`. A value is a string or a raw rich-text array: people `[["‣",[["u",id]]]]`, date `[["‣",[["d",{type:"date",start_date:"2026-01-31"}]]]]`.
+`pagePropertyHistory({pageId, limit?})`: who changed which property and when, newest first, as `[{time, type, authors[name|id], changes[{prop,before,after}]}]`. Read-only. It uses `syncRecordValues` (block, for `space_id`) then `getActivityLog`; `last_edited_by` on the public API is overwritten by an automation actor, the activity log keeps the real author. Bot authors (integrations, automations) are not in `notion_user`, so they stay raw ids. Property keys are short ids; the parent collection schema maps them to names. Called as a node tool, the whole script runs inside one `Runtime.evaluate`, so the CLI-argument trap does not apply. A hand snippet passed as a CLI argument with a semicolon in it is dropped and prints nothing: base64 it and run `eval(atob("..."))` as the one expression.
 
 ### More gotchas
 
