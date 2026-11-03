@@ -1,0 +1,53 @@
+{
+  "id": "accounts-delawareregisteredagent-com",
+  "name": "A Registered Agent client portal (documents)",
+  "domains": [
+    "accounts.delawareregisteredagent.com"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "listDocuments": {
+      "description": "Read-only. List every document in the signed-in account via GET /api/v3/client/client_documents. Reuses an open portal tab, else opens a background one and waits out the auth redirect.",
+      "path": "tools/dra.mjs",
+      "callable": "listDocuments",
+      "args": {},
+      "returns": {
+        "type": "array",
+        "description": "[{id, title, type, company_name, pageCount}]"
+      }
+    },
+    "pageUrls": {
+      "description": "Read-only. Collect short-lived presigned S3 image URLs for each page of one document (docId) or all documents. The fetch loop runs in the page and stores its result on window.__draPages, then polls. The caller downloads the PNGs.",
+      "path": "tools/dra.mjs",
+      "callable": "pageUrls",
+      "args": {
+        "docId": {
+          "type": "string",
+          "required": false,
+          "description": "one document id; omit for all documents"
+        },
+        "timeoutMs": {
+          "type": "number",
+          "required": false,
+          "description": "default 300000"
+        }
+      },
+      "returns": {
+        "type": "array",
+        "description": "[{docId, title, i, url}]; {stop:'doc-not-found'|'timeout'} on failure"
+      }
+    },
+    "listCompanies": {
+      "description": "Read-only. List the account's companies via GET /api/v3/client/companies.",
+      "path": "tools/dra.mjs",
+      "callable": "listCompanies",
+      "args": {},
+      "returns": {
+        "type": "array",
+        "description": "the API's companies array (name, id, entity type)"
+      }
+    }
+  }
+}
