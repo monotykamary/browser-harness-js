@@ -1,0 +1,43 @@
+{
+  "id": "mail-proton-me",
+  "name": "Proton Mail web (read-only search and conversation read)",
+  "domains": ["mail.proton.me"],
+  "notes": ["notes/overview.md"],
+  "nodeTools": {
+    "findAccountSlot": {
+      "description": "Which Proton account slot (/u/<n>/) owns an email address. Navigates /u/<n>/inbox for n=0..maxSlots-1 in its own background tab, waits for the title to carry an address, and matches document.title. Proton redirects an unknown slot to a signed-in one, so the slot is read from the final URL, not the loop index.",
+      "path": "tools/mail-proton-me.mjs",
+      "callable": "findAccountSlot",
+      "args": {
+        "email": {"type": "string", "required": true},
+        "maxSlots": {"type": "number", "required": false, "description": "default 4"}
+      },
+      "returns": {"type": "object", "description": "{slot, title} on match; {stop:\"not-found\", hint} otherwise"}
+    },
+    "searchRows": {
+      "description": "Open /u/<slot>/almost-all-mail#keyword=<term> in a background tab, poll until the result rows stop changing, and read them with textContent (innerText is empty for rows after the first in a background tab). Read-only.",
+      "path": "tools/mail-proton-me.mjs",
+      "callable": "searchRows",
+      "args": {
+        "slot": {"type": "number", "required": false, "description": "account slot from findAccountSlot, default 0"},
+        "term": {"type": "string", "required": true, "description": "keyword search term"},
+        "limit": {"type": "number", "required": false, "description": "max rows, default 25"}
+      },
+      "returns": {"type": "object", "description": "{rows:[{index, id (data-element-id, the conversation id), text (whitespace-collapsed, 200 chars)}]}; {rows:[], hint} when nothing appears within 15s"}
+    },
+    "readConversation": {
+      "description": "Search, real-click result row <index> (focus emulation lets a background tab open it without bringToFront), expand every collapsed message by clicking its header, and read each iframe[data-testid=content-iframe] body as plain text. Opening a message can mark an unread one as read (Proton default). Never sends, deletes, moves or labels. Pass url (a full /<label>/<conversationId>/<messageId> link from a previous result) instead of term to skip the search.",
+      "path": "tools/mail-proton-me.mjs",
+      "callable": "readConversation",
+      "args": {
+        "slot": {"type": "number", "required": false, "description": "default 0"},
+        "term": {"type": "string", "required": false, "description": "keyword search term; exactly one of term or url"},
+        "index": {"type": "number", "required": false, "description": "which result row to open, default 0"},
+        "url": {"type": "string", "required": false, "description": "a https://mail.proton.me/... conversation/message URL; exactly one of term or url"},
+        "maxChars": {"type": "number", "required": false, "description": "per-message text truncation, default 1600; chars always reports the full length"},
+        "maxMessages": {"type": "number", "required": false, "description": "expand at most this many collapsed messages, default 30"}
+      },
+      "returns": {"type": "object", "description": "{url, total, read, errorBanner, messages:[{index, expanded, header, chars, text}]}; {stop:\"no-results\"|\"index-out-of-range\"|\"conversation-not-loaded\", hint}"}
+    }
+  }
+}
