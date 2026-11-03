@@ -1,0 +1,38 @@
+{
+  "id": "retail-sc-com",
+  "name": "Standard Chartered SG online banking",
+  "domains": [
+    "retail.sc.com"
+  ],
+  "notes": [
+    "notes/overview.md"
+  ],
+  "nodeTools": {
+    "status": {
+      "description": "Read-only. Find the retail.sc.com tab and report its path and whether it is logged in (login page is /sg/nfs/login.htm). Never reports the query string, which carries the session token.",
+      "path": "tools/retail-sc-com.mjs",
+      "callable": "status",
+      "args": {},
+      "returns": {
+        "type": "object",
+        "description": "{state:\"tab\", path, loggedIn, hint?} or {state:\"no-tab\", hint}"
+      }
+    },
+    "estatements": {
+      "description": "Read-only. On the eStatements page (estatement_list_summary.htm), list the statement rows and their View PDF anchors. If the tab is on another ibank page it first clicks the eStatements menu anchor in-page (never Page.navigate, which drops the session). With dest, fetch each PDF with an in-page fetch (credentials included), return base64 to node, and write <type>-<month>.pdf into dest. No transfers, no form submits.",
+      "path": "tools/retail-sc-com.mjs",
+      "callable": "estatements",
+      "args": {
+        "dest": {
+          "type": "string",
+          "required": false,
+          "description": "directory to write PDFs into (created if missing); omit to only list"
+        }
+      },
+      "returns": {
+        "type": "object",
+        "description": "{count, rows:[{anchorIndex, selectIndex, documentType, type, month, cells, rowText}]} without dest; {count, files:[{path, bytes, isPdf}|{type, month, error}]} with dest; {stop:\"not-logged-in\"|\"menu-link-not-found\"|\"page-not-reached\"|\"no-pdf-links\", hint} otherwise; {state:\"no-tab\", hint} if no tab is open"
+      }
+    }
+  }
+}
