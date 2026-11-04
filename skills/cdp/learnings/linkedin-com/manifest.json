@@ -2,7 +2,7 @@
   "id": "linkedin-com",
   "name": "LinkedIn (post composer)",
   "domains": ["linkedin.com", "www.linkedin.com"],
-  "notes": ["notes/overview.md"],
+  "notes": ["notes/overview.md", "notes/profile-and-page-admin.md"],
   "nodeTools": {
     "createPost": {
       "description": "Publish a LinkedIn post as the logged-in member or as a company page they administer: open the composer in a background tab, type the body with one Input.insertText, optionally attach images (company pages), assert actor / media / paragraph count, click Post, then find the new post on the admin list or the member's activity page and return its permalink. Closes every tab it opens.",

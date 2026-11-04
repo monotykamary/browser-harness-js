@@ -2,7 +2,7 @@
   "id": "facebook-com",
   "name": "Facebook (Page composer)",
   "domains": ["facebook.com", "www.facebook.com"],
-  "notes": ["notes/overview.md"],
+  "notes": ["notes/overview.md", "notes/page-admin.md"],
   "nodeTools": {
     "createPagePost": {
       "description": "Compose and publish a post on a Facebook Page (or profile) through the logged-in session: open the page, open the Create post dialog, type the text, attach media files, click Post, then reload the page and confirm the text is in the feed.",
