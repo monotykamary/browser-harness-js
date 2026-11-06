@@ -24,6 +24,13 @@
 //                                          Refuses a path not ending .pdf and never overwrites
 //                                          without --force: the path is argv, and an agent's argv
 //                                          can carry text it just read off an untrusted page.
+//   browser-cdp shot <url-substring-or-targetId> <out.png> [--full-page]
+//                                          Page.captureScreenshot (png) of one tab, written 0644; prints
+//                                          "<out.png> <bytes> bytes". The tab is matched by exact target
+//                                          id, else by URL substring over page targets; more than one
+//                                          match lists them and exits 2. --full-page captures the whole
+//                                          document (captureBeyondViewport + layout-metrics clip). Never
+//                                          brings the tab to front and never opens a browser.
 //   browser-cdp close <targetId>
 //   browser-cdp list                       page targets: id, url, title
 //   browser-cdp learn new <short-id> --domains a.example,b.example [--name "Human name"]
@@ -47,6 +54,21 @@ async function target(id) {
   const t = (await targets()).find((x) => x.id === id);
   if (!t) throw new Error(`target not found: ${id}`);
   return t;
+}
+// shot's tab lookup: an exact target id wins, else a URL substring over page targets.
+// Zero matches exits 1, several list the candidates and exit 2.
+async function resolveTab(query) {
+  if (!query) throw new Error("shot needs <url-substring-or-targetId>");
+  const all = await targets();
+  const byId = all.find((x) => x.id === query);
+  if (byId) return byId;
+  const hits = all.filter((x) => x.type === "page" && x.url.includes(query));
+  if (hits.length === 1) return hits[0];
+  if (!hits.length) throw new Error(`no tab matches: ${query}`);
+  const err = new Error(`${hits.length} tabs match ${query}; pass a longer substring or a target id:\n` +
+    hits.map((x) => `${x.id}\t${x.url}\t${x.title}`).join("\n"));
+  err.exitCode = 2;
+  throw err;
 }
 async function connect(t) {
   const ws = new WebSocket(t.webSocketDebuggerUrl);
@@ -121,6 +143,31 @@ const commands = {
     writeFileSync(a3, Buffer.from(r.data, "base64"));
     console.log("wrote", a3);
   },
+  async shot() {
+    const rest = process.argv.slice(3);
+    const usage = "usage: browser-cdp shot <url-substring-or-targetId> <out.png> [--full-page]";
+    if (rest.includes("--help") || rest.includes("-h")) { console.log(usage); return; }
+    const fullPage = rest.includes("--full-page");
+    const [query, out, ...extra] = rest.filter((x) => x !== "--full-page");
+    if (!query || !out || extra.length) throw new Error(usage);
+    const ws = await connect(await resolveTab(query));
+    const params = { format: "png" };
+    if (fullPage) {
+      const m = await ws.rpc("Page.getLayoutMetrics");
+      const size = m.cssContentSize || m.contentSize;
+      params.captureBeyondViewport = true;
+      params.clip = { x: 0, y: 0, width: size.width, height: size.height, scale: 1 };
+    }
+    const r = await ws.rpc("Page.captureScreenshot", params);
+    ws.close();
+    const png = Buffer.from(r.data, "base64");
+    const { writeFileSync, chmodSync } = await import("node:fs");
+    try {
+      writeFileSync(out, png, { mode: 0o644 });
+      chmodSync(out, 0o644);
+    } catch (e) { throw new Error(`cannot write ${out}: ${e.message}`); }
+    console.log(`${out} ${png.length} bytes`);
+  },
   async close() { console.log(await (await fetch(`${base}/json/close/${arg}`)).text()); },
   async list() {
     for (const t of await targets()) if (t.type === "page") console.log(`${t.id}\t${t.url}\t${t.title}`);
@@ -148,7 +195,7 @@ const commands = {
 };
 
 if (!commands[cmd]) {
-  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js|-> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | close <targetId> | list | learn new <short-id> --domains a,b [--name \"...\"] | learn list");
+  console.error("usage: browser-cdp open <url> [waitMs] | read <targetId> [waitMs] | eval <targetId> <js|-> | click <targetId> <x> <y> | pdf <targetId> <out.pdf> [--force] | shot <url-substring-or-targetId> <out.png> [--full-page] | close <targetId> | list | learn new <short-id> --domains a,b [--name \"...\"] | learn list");
   process.exit(64);
 }
-commands[cmd]().catch((e) => { console.error(e.message); process.exit(1); });
+commands[cmd]().catch((e) => { console.error(e.message); process.exit(e.exitCode || 1); });

@@ -209,7 +209,7 @@ This repo contains thirteen skills installable via `npx skills add`:
 - `pi/` — optional Pi extension package: lazy `browser-harness` Fabric definition, guarded browser provider, provider-owned UI contract and focused fake-session tests
 - `skills/cdp/SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
 - `skills/cdp/sdk/browser-harness-js`, tiny CLI that auto-spawns the server and forwards snippets
-- `skills/cdp/sdk/browser-cdp`, the one-shot sibling: `open / read / eval / click / close / list` against the running browser with no daemon, one page websocket per command, plain stdout (Node built-ins only)
+- `skills/cdp/sdk/browser-cdp`, the one-shot sibling: `open / read / eval / click / pdf / shot / close / list` against the running browser with no daemon, one page websocket per command, plain stdout (Node built-ins only)
 - `skills/cdp/sdk/repl.ts` — Node HTTP server holding one persistent `Session`
 - `skills/cdp/extension/` — MV3 CDP relay (`chrome.debugger`); preferred `session.connect()` pipe
 - `skills/cdp/sdk/session.ts` — the `Session` class: transport, pinned reconnect, generation, target routing, events, call observation
