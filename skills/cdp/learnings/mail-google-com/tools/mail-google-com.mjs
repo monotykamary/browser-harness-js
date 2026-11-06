@@ -575,7 +575,16 @@ async function openThreadForCompose(ctx, { authuser, query }) {
   // and Cc typing depend on it), and this is the only call that foregrounds the tab. Runs only
   // for the compose verbs; the read-only verbs never activate a target.
   await ctx.session.Target.activateTarget({ targetId });
+  // A locked screen leaves every tab hidden, and Reply/Forward clicks then open nothing.
+  await tab.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   await wait(1500);
+  // A hash navigation in a background tab can leave the search list on screen; a reload of the
+  // now-foregrounded tab renders the thread.
+  if (!(await evaluate(tab, "!!document.querySelector('div.a3s')"))) {
+    await tab.send("Page.reload", {});
+    await pollUntil(tab, "!!document.querySelector('div.a3s')", 20000, 1000);
+    await wait(1500);
+  }
   return { targetId, tab };
 }
 
