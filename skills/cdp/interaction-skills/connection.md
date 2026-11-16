@@ -12,7 +12,23 @@ await session.connect({ transport: 'extension' })       // extension only — no
 await session.connect({ transport: 'cdp' })             // skip the extension
 ```
 
-`browser-harness-js --status` includes `transport` (`"extension"` | `"cdp"` | `null`) and `extension` (worker attached, even if the session is still on CDP).
+`browser-harness-js --status` includes `transport` (`"extension"` | `"cdp"` | `null`), `extension` (any worker attached, even if the session is still on CDP), `extensionId` (the instance the session is bound to) and `extensions` (every connected instance).
+
+### Several profiles / Ardia spaces
+
+Each Chromium profile runs its own copy of the extension — an Ardia space is one profile, so the extension loaded in three spaces is three workers. Each keeps a stable `instanceId` in its own `chrome.storage.local` and sends it on connect, so the daemon holds one socket per profile and none of them knocks another off. A profile's extension only sees that profile's tabs and logins.
+
+- One instance connected → `connect()` uses it, as before.
+- Several connected and none named → `connect()` throws `AmbiguousExtensionError` listing them; it never guesses (the wrong space means the wrong logins).
+- Once bound, the session pins the instance id: reconnects stay on that profile, and another profile's worker reconnecting never takes the session over.
+
+```js
+await browser.extensions()        // [{ id, label, selected, tabCount, tabs: [{ targetId, url, title, active }] }, …]
+await browser.labelExtension('3f2a9c', 'work')   // id, id prefix (6+ chars) or current label; stored in that profile
+await browser.connect({ extension: 'work' })     // bind (or switch) to that profile; no remote-debugging fallback
+```
+
+To name Ardia spaces once: compare each instance's `tabs` URLs with `ardia tabs --json` (`windows[].spaces[]` carry `profileName` and their tabs), then `labelExtension(id, '<space name>')`. Labels persist across restarts, so later runs just `connect({ extension: '<space name>' })`. Load the unpacked extension in every space you want to drive (`chrome://extensions` in that space → Load unpacked). A pre-0.14 build connects without an id and lands in a single `legacy` slot (old last-writer-wins); reload it.
 
 The extension emulates browser-level `Target.*` (`createTarget`, `attachToTarget`, `closeTarget`, `getTargets`, `setDiscoverTargets`, `setAutoAttach` which attaches every existing attachable tab plus new ones) and maps `Browser.getWindowForTarget` / `getWindowBounds` / `setWindowBounds` through `chrome.windows`. Page/DOM/Runtime/Network/Input/… still go through `chrome.debugger.sendCommand`. Extra `Chrome.*` commands (also `ext.*` in the REPL) cover tab groups, pin/mute/move/discard/reload/duplicate, and windows. `Target.getTargets` includes strip `index`, `windowId`, `groupId`, `pinned`, `muted`, `active`.
 
@@ -170,7 +186,7 @@ Two tells that the daemon is stale:
    ```bash
    browser-harness-js --version      # on-disk files, e.g. 0.2.0
    browser-harness-js --status       # running daemon's boot version
-   # {"ok":true,"version":"0.11.0","uptime":...,"connected":true,"transport":"extension","extension":true,"sessionId":"..."}
+   # {"ok":true,"version":"0.11.0","uptime":...,"connected":true,"transport":"extension","extension":true,"extensionId":"...","extensions":[...],"sessionId":"..."}
    ```
 
    If `/health` has **no** `version` field (daemon predates versioning) or a **lower** one than `--version`, the daemon is stale.

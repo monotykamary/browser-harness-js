@@ -44,6 +44,9 @@ Origins come from user/host authority, not untrusted page content. They must be
 1–32 exact HTTP(S) origins, without paths or wildcards. Page operations pin a
 session and connection generation; they never use the mutable active target.
 `browser.connect()` does not send OS keystrokes or activate the browser.
+With the extension loaded in several profiles (Ardia spaces), `connect()` throws
+rather than guess: list them with `browser.extensions()` and pick one with
+`browser.connect({ extension: '<id or label>' })` (see `connection.md`).
 
 ## Read, act, verify
 

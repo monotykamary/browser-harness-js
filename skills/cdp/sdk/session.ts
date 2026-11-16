@@ -12,7 +12,15 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { WIRE_OPEN, type Wire } from './wire.ts';
-import { getExtensionClient, waitForExtension } from './extension-hub.ts';
+import {
+  AmbiguousExtensionError,
+  LEGACY_ID,
+  getExtension,
+  matchesExtension,
+  waitForExtension,
+  type ExtensionClient,
+  type ExtensionInfo,
+} from './extension-hub.ts';
 
 type Pending = {
   resolve: (v: unknown) => void;
@@ -65,6 +73,13 @@ export type ConnectOptions = {
   /** How long auto-connect waits for the extension before falling back
    *  to remote debugging. Default 500. Ignored when transport is pinned. */
   extensionWaitMs?: number;
+  /** Which extension instance to use when several are connected — one per
+   *  browser profile (an Ardia space, a Chrome person). Its instance id, a
+   *  unique id prefix, or the label set with `browser.labelExtension()`.
+   *  Implies `transport: 'extension'` unless a transport is given. Once bound,
+   *  the Session pins the instance id, so reconnects stay on that profile and
+   *  another profile's extension never takes the Session over. */
+  extension?: string;
   /** Headers for the remote-debugging WebSocket upgrade: a hosted browser's DevTools
    *  endpoint authenticates with them. Node's and Bun's built-in WebSocket send them;
    *  persisted on the Session so auto-heal reconnects send them too. */
@@ -100,6 +115,7 @@ export class Session implements Transport {
   private connectPromise?: Promise<void>;
   private connectionOptions?: ConnectOptions;
   private connectionGeneration = 0;
+  private extensionInfo: ExtensionInfo | undefined;
 
   getConnectionGeneration(): number { return this.connectionGeneration; }
 
@@ -144,8 +160,12 @@ export class Session implements Transport {
    * on the extension and does not fall back.
    */
   async connect(opts: ConnectOptions = this.connectionOptions ?? {}): Promise<void> {
-    // Fast path: already connected.
-    if (this.isConnected()) return;
+    // Fast path: already connected — unless an extension selector names a different profile.
+    if (this.isConnected()) {
+      const want = opts.extension;
+      const switching = want && !(this.transportName === 'extension' && this.extensionInfo && matchesExtension(this.extensionInfo, want));
+      if (!switching) return;
+    }
     // Another connect is in flight — ride on it.
     if (this.connectPromise) return this.connectPromise;
     // Retain the authorized endpoint, transport and timeout policy for reconnect.
@@ -166,21 +186,22 @@ export class Session implements Transport {
     const timeoutMs = opts.timeoutMs ?? 5_000;
     const autoAllowDelayMs = opts.autoAllowDelayMs ?? 600;
     const explicitCdp = Boolean(opts.wsUrl || opts.profileDir || opts.port);
-    const transport = explicitCdp ? 'cdp' : (opts.transport ?? 'auto');
+    const transport = explicitCdp ? 'cdp' : (opts.transport ?? (opts.extension ? 'extension' : 'auto'));
+    const selector = opts.extension;
 
-    if (transport !== 'cdp' && this.takeExtensionIfPresent()) return;
+    // Several profiles' extensions connected and none named: throw rather than guess.
+    if (transport !== 'cdp' && this.takeExtensionIfPresent(selector)) return;
     if (transport === 'extension') {
-      const wire = await waitForExtension(timeoutMs);
-      this.bindWire(wire, 'extension');
+      this.bindExtension(await waitForExtension(timeoutMs, selector));
       return;
     }
     if (transport === 'auto') {
       try {
-        const wire = await waitForExtension(opts.extensionWaitMs ?? 500);
-        this.bindWire(wire, 'extension');
+        this.bindExtension(await waitForExtension(opts.extensionWaitMs ?? 500, selector));
         return;
-      } catch {
-        if (this.takeExtensionIfPresent()) return;
+      } catch (e) {
+        if (e instanceof AmbiguousExtensionError) throw e;
+        if (this.takeExtensionIfPresent(selector)) return;
       }
     }
 
@@ -202,7 +223,7 @@ export class Session implements Transport {
     }
     const errors: string[] = [];
     for (const b of browsers) {
-      if (transport === 'auto' && this.takeExtensionIfPresent()) return;
+      if (transport === 'auto' && this.takeExtensionIfPresent(selector)) return;
       try {
         await this.openWs(b.wsUrl, timeoutMs, { autoAllow: this.autoAllow, name: b.name, autoAllowDelayMs });
         return;
@@ -268,12 +289,23 @@ export class Session implements Transport {
   }
 
   /** Plug an inbound extension socket unless authorized settings pin CDP.
+   *  Only the instance the Session is pinned to re-binds (its worker
+   *  restarted). An unpinned Session picks on connect(), never here: profiles
+   *  reconnect in arbitrary order after a daemon restart, and adopting
+   *  whichever arrived first would be a guess.
    *  Replacing a wire rejects pending calls; effects are never replayed. */
-  adoptExtension(wire: Wire): void {
+  adoptExtension(client: ExtensionClient): void {
     const opts = this.connectionOptions;
     if (opts?.wsUrl || opts?.profileDir || opts?.port || opts?.transport === 'cdp') return;
-    this.connectionOptions = { ...opts, transport: 'extension' };
-    this.bindWire(wire, 'extension');
+    if (!opts?.extension || !matchesExtension(client.info, opts.extension)) return;
+    this.bindExtension(client);
+  }
+
+  /** The extension instance this Session is bound to, while connected through it. */
+  getExtension(): ExtensionInfo | undefined {
+    return this.isConnected() && this.transportName === 'extension' && this.extensionInfo
+      ? { ...this.extensionInfo }
+      : undefined;
   }
 
   getTransport(): SessionTransport | undefined {
@@ -286,14 +318,31 @@ export class Session implements Transport {
 
   close(): void {
     this.connectionChanged();
-    this.ws?.close();
+    const wire = this.ws;
+    if (this.transportName === 'extension') {
+      // The hub owns extension sockets: detach instead of making the worker reconnect.
+      this.ws = undefined;
+      for (const [, p] of this.pending) p.reject(new Error('CDP session closed'));
+      this.pending.clear();
+      return;
+    }
+    wire?.close();
   }
 
-  private takeExtensionIfPresent(): boolean {
-    const ext = getExtensionClient();
+  private takeExtensionIfPresent(selector?: string): boolean {
+    const ext = getExtension(selector);
     if (!ext) return false;
-    this.bindWire(ext, 'extension');
+    this.bindExtension(ext);
     return true;
+  }
+
+  private bindExtension(client: ExtensionClient): void {
+    this.extensionInfo = client.info;
+    // Pin real instance ids only: a legacy worker names no profile, and pinning it would strand
+    // the session once that worker is reloaded into an id-bearing build.
+    const extension = client.info.id === LEGACY_ID ? undefined : client.info.id;
+    this.connectionOptions = { ...this.connectionOptions, transport: 'extension', extension };
+    this.bindWire(client.wire, 'extension');
   }
 
   private bindWire(wire: Wire, name: SessionTransport): void {
@@ -302,6 +351,7 @@ export class Session implements Transport {
       return;
     }
     const prev = this.ws;
+    const prevTransport = this.transportName;
     for (const [, pending] of this.pending) pending.reject(new Error('CDP connection replaced'));
     this.pending.clear();
     this.ws = wire;
@@ -318,7 +368,8 @@ export class Session implements Transport {
       for (const [, p] of this.pending) p.reject(new Error('CDP socket closed'));
       this.pending.clear();
     });
-    if (prev) {
+    // Extension sockets belong to the hub (other profiles may want them later); only close our own CDP socket.
+    if (prev && prevTransport !== 'extension') {
       try { prev.close(); } catch { /* ignore */ }
     }
   }

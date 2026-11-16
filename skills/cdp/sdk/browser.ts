@@ -1,5 +1,6 @@
 import { Session, listPageTargets, type ConnectOptions } from './session.ts';
 import { Page, type PageOptions } from './page.ts';
+import { describeExtensions, labelExtension, type ExtensionDescription, type ExtensionInfo } from './extension-hub.ts';
 export { Page, Locator } from './page.ts';
 export type { PageOptions, CallOptions, ActionOptions, ActionResult, RoleOptions, PageSnapshot, SnapshotOptions } from './page.ts';
 export type BrowserPageOptions = Omit<PageOptions, 'sessionId' | 'targetId' | 'ownsAttachment'>;
@@ -14,6 +15,13 @@ export class Browser {
     await this.session.connect({ ...options, autoAllow: options.autoAllow ?? false });
   }
   tabs() { return listPageTargets(this.session); }
+  /** Connected extension instances (one per browser profile / Ardia space) with their open tabs; `selected` marks the bound one. */
+  async extensions(): Promise<ExtensionDescription[]> {
+    const bound = this.session.getExtension()?.id;
+    return (await describeExtensions()).map(e => ({ ...e, selected: e.id === bound }));
+  }
+  /** Name an instance (by id, id prefix or current label); stored in that profile so it survives restarts. */
+  labelExtension(selector: string, label: string): Promise<ExtensionInfo> { return labelExtension(selector, label); }
   private reserve(options: BrowserPageOptions): void {
     if (!this.session.isConnected()) throw new Error('Connect the browser first');
     // Validate policy before acquiring a browser attachment or creating a tab.

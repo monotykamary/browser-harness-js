@@ -5,8 +5,10 @@
  *   POST /eval     body = raw JS to evaluate (NOT JSON-wrapped).
  *                  Top-level await supported. Single expression auto-returns.
  *                  Response: {"ok":true,"result":<json>} | {"ok":false,"error":..,"stack"?:..}
- *   GET  /health   {"ok":true,"version":<string>,"uptime":<seconds>,"connected":<bool>,"transport":"extension"|"cdp"|null,"extension":<bool>,"sessionId":<string|null>}
- *   GET  /extension  WebSocket upgrade — MV3 relay (preferred pipe)
+ *   GET  /health   {"ok":true,"version":<string>,"uptime":<seconds>,"connected":<bool>,"transport":"extension"|"cdp"|null,
+ *                   "extension":<bool>,"extensionId":<string|null>,"extensions":[{id,label,version,connectedAt}],"sessionId":<string|null>}
+ *   GET  /extension?id=<instanceId>&label=<label>&v=<version>
+ *                  WebSocket upgrade — MV3 relay (preferred pipe); one per browser profile
  *   POST /quit     graceful shutdown. Returns {"ok":true} then exits.
  *
  * State: `session`, the active sessionId, event subscribers, and any
@@ -16,7 +18,7 @@
 
 import { bindChrome } from './chrome.ts';
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
-import { asWire, extensionConnected, setExtensionClient } from './extension-hub.ts';
+import { asWire, extensionConnected, helloFromUrl, listExtensions, setExtensionClient } from './extension-hub.ts';
 import { acceptExtensionUpgrade, isExtensionUpgrade } from './ws-server.ts';
 import { Browser } from './browser.ts';
 import { RecordingManager } from './recording.ts';
@@ -116,6 +118,8 @@ const server = createServer((req, res) => {
       connected: session.isConnected(),
       transport: session.getTransport() ?? null,
       extension: extensionConnected(),
+      extensionId: session.getExtension()?.id ?? null,
+      extensions: listExtensions(),
       sessionId: session.getActiveSession() ?? null,
     }));
     return;
@@ -165,9 +169,8 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
   acceptExtensionUpgrade(req, socket, head, textSocket => {
-    const wire = asWire(textSocket);
-    setExtensionClient(wire);
-    session.adoptExtension(wire);
+    const client = setExtensionClient(asWire(textSocket), helloFromUrl(req.url));
+    session.adoptExtension(client);
   });
 });
 
