@@ -117,8 +117,10 @@ test('extension reconnect stays extension-only and connection replacement reject
   const effect = session._call('Input.insertText', { text: 'one' }, { sessionId: 'sid' });
   const rejected = assert.rejects(effect, /replaced|closed/);
   const generation = session.getConnectionGeneration();
-  // Same instance reconnecting (worker restart): the hub swaps its socket and the pinned Session follows.
+  // Legacy worker restart: the hub swaps its socket; the unpinned Session re-picks on the next connect.
   const second = new FakeWire(); session.adoptExtension(setExtensionClient(second)); await rejected;
+  assert.equal(session.isConnected(), false);
+  await session.connect();
   assert.equal(session.getTransport(), 'extension');
   assert.ok(session.getConnectionGeneration() > generation); assert.equal(second.sent.length, 0);
   second.close(); resetExtensionHub();
@@ -127,7 +129,8 @@ test('extension reconnect stays extension-only and connection replacement reject
 });
 
 test('real Session exposes a synchronous generation fence without reconnecting or replaying guarded calls', async () => {
-  resetExtensionHub(); const session = new Session(); const wire = new FakeWire(); session.adoptExtension(setExtensionClient(wire));
+  resetExtensionHub(); const session = new Session(); const wire = new FakeWire(); setExtensionClient(wire);
+  await session.connect({ transport: 'extension', timeoutMs: 20 });
   const generation = session.getConnectionGeneration();
   await session._call('Runtime.callFunctionOn', { objectId: 'guard', functionDeclaration: 'function() { return this.act(); }' },
     { sessionId: 'scoped', expectedGeneration: generation });
@@ -141,7 +144,8 @@ test('real Session exposes a synchronous generation fence without reconnecting o
 });
 
 test('page commands keep the active target session while extension commands route through the browser session', async () => {
-  resetExtensionHub(); const session = new Session(); const wire = new FakeWire(); session.adoptExtension(setExtensionClient(wire));
+  resetExtensionHub(); const session = new Session(); const wire = new FakeWire(); setExtensionClient(wire);
+  await session.connect({ transport: 'extension', timeoutMs: 20 });
   session.setActiveSession('page-session');
   await session._call('Page.navigate', {});
   await session._call('Extensions.getExtensions', {});
@@ -182,6 +186,35 @@ test('two profiles\' extensions: auto connect refuses to guess, a selector picks
   assert.equal(session.getExtension()?.id, 'bbbbbbbb-home');
   session.close();
   assert.equal(homeAgain.readyState, WIRE_OPEN, 'closing the Session leaves the hub-owned socket up');
+  resetExtensionHub();
+});
+
+test('a legacy (id-less) binding does not strand the session once the worker is reloaded with an id', async () => {
+  resetExtensionHub();
+  const legacy = new FakeWire();
+  setExtensionClient(legacy);
+  const session = new Session();
+  await session.connect({ extensionWaitMs: 20 });
+  assert.equal(session.getExtension()?.id, 'legacy');
+  legacy.close();
+  // The reloaded worker comes back with a real id: not pinned to "legacy", so connect() takes it and pins it.
+  session.adoptExtension(setExtensionClient(new FakeWire(), { id: 'tom-space-0001' }));
+  await session.connect();
+  assert.equal(session.getExtension()?.id, 'tom-space-0001');
+  session.close();
+  // A plain connect() after close() reuses the pin rather than waiting for "legacy".
+  setExtensionClient(new FakeWire(), { id: 'linkme-space-01' });
+  await session.connect();
+  assert.equal(session.getExtension()?.id, 'tom-space-0001');
+  session.close(); resetExtensionHub();
+});
+
+test('an unpinned Session does not adopt whichever profile reconnects first', () => {
+  resetExtensionHub();
+  const session = new Session();
+  session.adoptExtension(setExtensionClient(new FakeWire(), { id: 'tom-space-0001' }));
+  session.adoptExtension(setExtensionClient(new FakeWire(), { id: 'linkme-space-01' }));
+  assert.equal(session.isConnected(), false);
   resetExtensionHub();
 });
 

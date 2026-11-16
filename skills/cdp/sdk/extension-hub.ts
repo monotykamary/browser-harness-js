@@ -38,7 +38,8 @@ type Waiter = {
 
 type HubRequest = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
 
-const LEGACY_ID = 'legacy';
+/** Slot for workers that send no id: they cannot say which profile they are. */
+export const LEGACY_ID = 'legacy';
 const clients = new Map<string, { info: ExtensionInfo; wire: Wire; requests: Map<number, HubRequest> }>();
 let waiters: Waiter[] = [];
 // Hub-originated requests use negative ids so they never collide with Session's.

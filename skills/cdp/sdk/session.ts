@@ -14,8 +14,8 @@ import { execFile } from 'node:child_process';
 import { WIRE_OPEN, type Wire } from './wire.ts';
 import {
   AmbiguousExtensionError,
+  LEGACY_ID,
   getExtension,
-  listExtensions,
   matchesExtension,
   waitForExtension,
   type ExtensionClient,
@@ -289,18 +289,15 @@ export class Session implements Transport {
   }
 
   /** Plug an inbound extension socket unless authorized settings pin CDP.
-   *  Pinned to an instance: only that instance's reconnect re-binds. Unpinned:
-   *  only a lone instance is taken, and never over a live connection, so a
-   *  second profile's extension cannot steal the Session.
+   *  Only the instance the Session is pinned to re-binds (its worker
+   *  restarted). An unpinned Session picks on connect(), never here: profiles
+   *  reconnect in arbitrary order after a daemon restart, and adopting
+   *  whichever arrived first would be a guess.
    *  Replacing a wire rejects pending calls; effects are never replayed. */
   adoptExtension(client: ExtensionClient): void {
     const opts = this.connectionOptions;
     if (opts?.wsUrl || opts?.profileDir || opts?.port || opts?.transport === 'cdp') return;
-    if (opts?.extension) {
-      if (!matchesExtension(client.info, opts.extension)) return;
-    } else if (this.isConnected() || listExtensions().length !== 1) {
-      return;
-    }
+    if (!opts?.extension || !matchesExtension(client.info, opts.extension)) return;
     this.bindExtension(client);
   }
 
@@ -341,7 +338,10 @@ export class Session implements Transport {
 
   private bindExtension(client: ExtensionClient): void {
     this.extensionInfo = client.info;
-    this.connectionOptions = { ...this.connectionOptions, transport: 'extension', extension: client.info.id };
+    // Pin real instance ids only: a legacy worker names no profile, and pinning it would strand
+    // the session once that worker is reloaded into an id-bearing build.
+    const extension = client.info.id === LEGACY_ID ? undefined : client.info.id;
+    this.connectionOptions = { ...this.connectionOptions, transport: 'extension', extension };
     this.bindWire(client.wire, 'extension');
   }
 
