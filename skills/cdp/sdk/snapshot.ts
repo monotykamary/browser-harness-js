@@ -10,6 +10,8 @@ export type SnapshotOptions = {
   frameId?: string;
   ref?: string;
   selector?: string;
+  /** Whole-page snapshots also say what the tree lists that a person does not see (default true). */
+  unseen?: boolean;
 };
 export type SnapshotFrame = { frameId: string; sessionId: string; key: string; url: string };
 export type SnapshotRef = {
@@ -29,6 +31,86 @@ export type PageSnapshot = {
   truncated: boolean;
   omissions: string[];
 };
+/** A control the tree lists that a person does not see, and text the screen cuts off. */
+export type Unseen = {
+  hidden: { role: string; name: string; why: string }[];
+  cut: { text: string }[];
+};
+/**
+ * In-page: what the accessibility tree lists as if it were shown, though a person looking at the screen would not
+ * find it. Controls positioned off-screen, clipped to nothing (the screen-reader-only pattern) or clipped away by a
+ * container; and text its own box cuts off (an ellipsis, a narrow table or grid cell). Only the unambiguous kinds: a
+ * control that is merely transparent or sizeless is too often the native input behind a styled stand-in the person
+ * does see. Names come from labels and text, never from a field's value; password fields and private-marked regions
+ * are left out altogether.
+ */
+export const UNSEEN_SOURCE = String.raw`(() => {
+  const MAX = 20;
+  const up = n => n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  const all = (root, css, out = []) => {
+    out.push(...root.querySelectorAll(css));
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) all(el.shadowRoot, css, out);
+    return out;
+  };
+  const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const secret = el => el.type === 'password' || !!el.closest('[data-private], [data-sensitive]');
+  const rendered = el => typeof el.checkVisibility === 'function'
+    ? el.checkVisibility({ visibilityProperty: true })
+    : getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+  const role = el => {
+    const explicit = el.getAttribute('role'); if (explicit) return explicit;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (tag === 'input') { const t = (el.getAttribute('type') || 'text').toLowerCase(); return t === 'checkbox' || t === 'radio' ? t : t === 'submit' || t === 'button' ? 'button' : 'textbox'; }
+    return tag === 'select' ? 'combobox' : tag === 'textarea' ? 'textbox' : tag === 'summary' ? 'button' : tag;
+  };
+  const name = el => clean(el.getAttribute('aria-label') || (el.labels && el.labels[0] ? el.labels[0].textContent : '') || el.textContent || el.getAttribute('title')).slice(0, 80);
+  const clips = cs => /hidden|clip/.test(cs.overflowX) || /hidden|clip/.test(cs.overflowY);
+  const why = el => {
+    const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    if (r.right + scrollX <= 0 || r.bottom + scrollY <= 0) return 'positioned off-screen';
+    // The screen-reader-only pattern: a clip that leaves nothing to see, or a box of a pixel or two that clips its content.
+    if (/inset\((?:50|100)%/.test(cs.clipPath) || /rect\((?:0px|1px)[, ]+(?:0px|1px)[, ]+(?:0px|1px)[, ]+(?:0px|1px)\)/.test(cs.clip) || (clips(cs) && r.width <= 2 && r.height <= 2)) return 'clipped to nothing';
+    if (cs.position === 'fixed') return '';
+    for (let a = up(el); a && a.nodeType === 1; a = up(a)) {
+      const as = getComputedStyle(a);
+      if (clips(as)) {
+        const b = a.getBoundingClientRect();
+        if (r.bottom <= b.top || r.top >= b.bottom || r.right <= b.left || r.left >= b.right) return 'clipped away by its container';
+      }
+      if (as.position === 'fixed') break;
+    }
+    return '';
+  };
+  const hidden = [], cut = [];
+  for (const el of all(document, 'button, a[href], input:not([type=hidden]), select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=option], [role=checkbox], [role=radio], [role=switch]').slice(0, 800)) {
+    if (hidden.length >= MAX) break;
+    if (secret(el) || !rendered(el)) continue;
+    const label = name(el); if (!label) continue;
+    const reason = why(el); if (reason) hidden.push({ role: role(el), name: label, why: reason });
+  }
+  for (const el of all(document, '*').slice(0, 6000)) {
+    if (cut.length >= MAX) break;
+    if (el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1) continue;
+    const cs = getComputedStyle(el);
+    // Its own box cuts the text; a scroll area the person can scroll does not.
+    if (!clips(cs) || /auto|scroll/.test(cs.overflowX + cs.overflowY)) continue;
+    if (secret(el) || !rendered(el) || why(el)) continue;
+    const text = clean([...el.childNodes].filter(n => n.nodeType === 3).map(n => n.nodeValue).join(' '));
+    if (text.length >= 2) cut.push({ text: text.slice(0, 80) });
+  }
+  return { hidden, cut };
+})()`;
+/** The lines a snapshot adds for what a person does not see as the tree lists it; none when there is nothing. */
+export function renderUnseen(found: Unseen | undefined): string[] {
+  const lines: string[] = [];
+  const hidden = found?.hidden ?? [], cut = found?.cut ?? [];
+  if (hidden.length) lines.push('- listed above, but not visible to a person (a user cannot find or click them as they are):',
+    ...hidden.map(h => `  - ${h.role} ${JSON.stringify(h.name)}: ${h.why}`));
+  if (cut.length) lines.push('- text listed in full above that the screen cuts off (a person reads only part of it):',
+    ...cut.map(c => `  - ${JSON.stringify(c.text)}`));
+  return lines;
+}
 export class SnapshotLimitError extends Error {
   constructor(message: string) { super(`${message}; narrow the snapshot with ref, selector, frameId or maxDepth`); }
 }

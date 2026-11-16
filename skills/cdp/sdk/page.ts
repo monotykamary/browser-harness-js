@@ -1,8 +1,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Session } from './session.ts';
 import { InteractionController, type InteractionAction, type InteractionObservation, type InteractionReceipt, type InteractionInput } from './interaction.ts';
-import { renderAX, snapshotDiff, snapshotLimits, nodeIdentity, roleOf, nameOf, SnapshotLimitError, MAX_SNAPSHOT_CHARS, MISSING_SUBTREE,
-  type AXNode, type SnapshotOptions, type SnapshotFrame, type SnapshotRef, type PageSnapshot } from './snapshot.ts';
+import { renderAX, renderUnseen, snapshotDiff, snapshotLimits, nodeIdentity, roleOf, nameOf, SnapshotLimitError, MAX_SNAPSHOT_CHARS, MISSING_SUBTREE,
+  UNSEEN_SOURCE, type AXNode, type SnapshotOptions, type SnapshotFrame, type SnapshotRef, type PageSnapshot, type Unseen } from './snapshot.ts';
 export type { PageSnapshot, SnapshotOptions } from './snapshot.ts';
 
 export type PageOptions = {
@@ -235,6 +235,14 @@ export class Page {
     }
   }
 
+  /** Controls drawn out of sight and text the screen cuts off in the main document (snapshot.ts UNSEEN_SOURCE). */
+  private async unseen(frame: Frame, signal: AbortSignal): Promise<Unseen | undefined> {
+    try {
+      const world = await this.call('Page.createIsolatedWorld', { frameId: frame.frameId, worldName: 'browser-harness-read' }, signal, frame.sessionId);
+      const result = await this.call('Runtime.evaluate', { contextId: world.executionContextId, expression: UNSEEN_SOURCE, returnByValue: true }, signal, frame.sessionId);
+      return result.exceptionDetails ? undefined : result.result?.value as Unseen | undefined;
+    } catch { this.assertLive(signal); return undefined; }
+  }
   private async selectorNode(selector: string, frame: Frame, signal: AbortSignal): Promise<number> {
     if (!selector || selector.length > 2048) throw new Error('CSS selector must be 1..2048 characters');
     const world = await this.call('Page.createIsolatedWorld', { frameId: frame.frameId, worldName: 'browser-harness-read' }, signal, frame.sessionId);
@@ -308,6 +316,8 @@ export class Page {
       lines.push(rendered.tree);
       truncated ||= rendered.truncated;
     }
+    // A whole-page read also says what the tree lists that a person does not see: best effort, never a failed read.
+    if (!frameId && !selected && !options.selector && options.unseen !== false) lines.push(...renderUnseen(await this.unseen(main, signal)));
     if (omissions.length) lines.push(...omissions.map(o => `[omitted ${o}]`));
     const tree = lines.join('\n');
     if (tree.length > limits.maxChars) throw new SnapshotLimitError(`Snapshot exceeds ${limits.maxChars} characters`);

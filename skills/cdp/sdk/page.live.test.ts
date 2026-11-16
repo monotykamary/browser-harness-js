@@ -27,6 +27,20 @@ const shapes = () => `<!doctype html><title>Guard shapes</title><body style="mar
 <div role="menubar" style="height:30px"><div role="menuitem" tabindex="0" style="display:inline-block">Accounts</div><div id="caret" aria-hidden="true" style="display:inline-block;width:18px;height:18px;cursor:pointer;background:#ccc" onclick="document.getElementById('sub').style.display='block'"></div><div id="sub" role="menu" style="display:none"><div role="menuitem">New Account</div></div></div>
 <div style="position:relative;height:40px"><button>Apply now</button><div id="notice" style="position:absolute;inset:0;background:#ffe">Notice</div></div>
 </body>`;
+// What a person does not see as the tree lists it: controls drawn out of sight and names their boxes cut off; beside
+// them, shapes that must not be reported (in plain sight, below the fold, a scroll area, a transparent styled radio).
+const CUT = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:28px';
+const unseen = () => `<!doctype html><title>Unseen</title><body style="margin:16px;font:14px sans-serif">
+<button>Open inbox</button><button style="position:absolute;left:-9999px">Open archive</button>
+<button style="position:absolute;clip-path:inset(50%);width:1px;height:1px;overflow:hidden">Open ledger</button>
+<div style="height:0;overflow:hidden"><button>Open vault</button></div>
+<a href="#x" style="position:absolute;clip:rect(0 0 0 0);width:1px;height:1px;overflow:hidden">Skip to results</a>
+<div style="width:90px;${CUT}">Quarterly reports archive</div>
+<table><tr><td style="max-width:90px;${CUT}">Contracts signed copies</td><td>12</td></tr></table>
+<div role="grid" style="display:grid;grid-template-columns:90px 60px"><span role="gridcell" style="${CUT}">Marketing assets library</span><span role="gridcell">7</span></div>
+<div style="width:400px">Budget summary fits</div><div style="height:40px;overflow:auto"><p>Line one</p><p>Line two</p><p>Line three</p></div>
+<label style="display:inline-flex;gap:6px"><input type="radio" name="plan" style="position:absolute;opacity:0;width:0;height:0"><span style="width:14px;height:14px;border:1px solid #333;border-radius:50%"></span>Annual plan</label>
+<input type="password" aria-label="Vault key" style="position:absolute;left:-9999px"><div style="height:1800px"></div><button>Open cellar</button></body>`;
 // A page whose snapshot exceeds the 50,000-character default.
 const large = () => `<!doctype html><title>Catalogue</title>${Array.from({length:1500},(_,i)=>`<p>Catalogue line ${i} with enough words to fill the page</p>`).join('')}
 <p id="state">Basket empty</p><button onclick="document.getElementById('state').textContent='Basket checked out'">Checkout</button>`;
@@ -45,7 +59,7 @@ const typing = () => `<!doctype html><title>Typing</title><body style="margin:16
 <script>let keys=0;document.getElementById('city').addEventListener('keydown',e=>{if(!e.ctrlKey&&!e.metaKey)document.getElementById('keys').textContent=String(++keys)});
 customElements.define('sealed-signin',class extends HTMLElement{constructor(){super();const root=this.attachShadow({mode:'closed'});root.innerHTML='<button>Sealed sign in</button>';root.querySelector('button').addEventListener('click',()=>document.getElementById('state').textContent='Signed in')}});</script>
 </body>`;
-const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/shapes': shapes, '/large': large, '/ads': ads, '/login': login, '/typing': typing };
+const routes: Record<string, () => string> = { '/child': () => '<title>Child</title><button>Child button</button>', '/shapes': shapes, '/unseen': unseen, '/large': large, '/ads': ads, '/login': login, '/typing': typing };
 before(async () => {
   server=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((routes[req.url ?? ''] ?? html)());});
   await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
@@ -256,4 +270,34 @@ test('a control in a closed shadow root takes a real click; a transparent file i
     assert.equal(signin.status,'executed',JSON.stringify(signin).slice(0,300));assert.equal(signin.verified,true);
     assert.ok((await p.page.observe()).candidates.some(c=>c.role==='button'&&c.label==='Upload receipt'));
   }finally{await p.close();}
+});
+
+test('a whole-page snapshot names controls drawn out of sight and text the screen cuts off, and nothing else',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  const p=await open([origin],'/unseen');try{
+    const {tree}=await p.page.snapshot();
+    const hidden=tree.slice(tree.indexOf('not visible to a person')),cut=tree.slice(tree.indexOf('the screen cuts off'));
+    assert.match(tree,/not visible to a person/,tree);
+    for(const name of ['Open archive','Open ledger','Open vault','Skip to results'])assert.ok(hidden.includes(JSON.stringify(name)),`${name}: ${tree}`);
+    assert.match(hidden,/"Open archive": positioned off-screen/);assert.match(hidden,/"Open ledger": clipped to nothing/);
+    assert.match(hidden,/"Open vault": clipped away by its container/);
+    // In plain sight, below the fold, behind a styled stand-in: not reported. A password field is never listed.
+    for(const name of ['Open inbox','Open cellar','Annual plan','Vault key'])assert.ok(!hidden.includes(JSON.stringify(name)),`${name}: ${tree}`);
+    assert.match(tree,/the screen cuts off/,tree);
+    for(const text of ['Quarterly reports archive','Contracts signed copies','Marketing assets library'])assert.ok(cut.includes(JSON.stringify(text)),`${text}: ${tree}`);
+    for(const text of ['Budget summary fits','Line one'])assert.ok(!cut.includes(JSON.stringify(text)),`${text}: ${tree}`);
+    // Opt-out, and a scoped read, leave the notes out.
+    assert.ok(!(await p.page.snapshot({unseen:false})).tree.includes('not visible to a person'));
+    assert.ok(!(await p.page.snapshot({selector:'table'})).tree.includes('the screen cuts off'));
+  }finally{await p.close();}
+});
+test('a page with nothing out of sight gets no such notes',async t=>{
+  if(!port)return t.skip('Chrome not installed');
+  for(const path of ['/','/shapes']){
+    const p=await open([origin],path);try{
+      const {tree}=await p.page.snapshot();
+      assert.ok(!tree.includes('not visible to a person'),`${path}: ${tree.slice(-600)}`);
+      assert.ok(!tree.includes('the screen cuts off'),`${path}: ${tree.slice(-600)}`);
+    }finally{await p.close();}
+  }
 });

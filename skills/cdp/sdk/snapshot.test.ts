@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderAX, snapshotDiff, SnapshotLimitError, nodeIdentity, type AXNode } from './snapshot.ts';
+import { renderAX, renderUnseen, snapshotDiff, SnapshotLimitError, nodeIdentity, type AXNode } from './snapshot.ts';
 const node = (id: number, role: string, name = '', children: number[] = [], extra: Partial<AXNode> = {}): AXNode => ({
   nodeId: String(id), ignored: false, role: { type: 'role', value: role }, name: { type: 'string', value: name },
   backendDOMNodeId: id, childIds: children.map(String), ...extra,
@@ -45,4 +45,13 @@ test('diff ignores ref churn, retains duplicate counts and surfaces reorders', (
   assert.equal(snapshotDiff(a,b,after,before),'(no changes)');
   assert.match(snapshotDiff(a,b.split('\n').reverse().join('\n'),after,before),/order changed/);
   assert.equal(snapshotDiff('text\ntext','text',new Map(),new Map()),'- text');
+});
+test('unseen controls and cut-off text are named beside the tree; nothing found adds nothing', () => {
+  assert.deepEqual(renderUnseen(undefined), []);
+  assert.deepEqual(renderUnseen({ hidden: [], cut: [] }), []);
+  const lines = renderUnseen({ hidden: [{ role: 'button', name: 'Open "archive"', why: 'positioned off-screen' }], cut: [{ text: 'Quarterly reports archive' }] });
+  assert.equal(lines.length, 4);
+  assert.match(lines[0]!, /not visible to a person/); assert.equal(lines[1], '  - button "Open \\"archive\\"": positioned off-screen');
+  assert.match(lines[2]!, /the screen cuts off/); assert.equal(lines[3], '  - "Quarterly reports archive"');
+  assert.deepEqual(renderUnseen({ hidden: [], cut: [{ text: 'Only text' }] }).length, 2);
 });

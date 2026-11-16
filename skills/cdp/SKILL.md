@@ -65,7 +65,7 @@ click. There is no automatic action retry or raw-input fallback.
 
 | API | Meaning |
 |---|---|
-| `page.snapshot(options?)` | `{id,url,title,tree,diff,truncated,omissions}`; refs are owned internally |
+| `page.snapshot(options?)` | `{id,url,title,tree,diff,truncated,omissions}`; refs are owned internally; a whole-page tree ends with notes on unseen controls and cut-off text |
 | `page.locator('sAb3dEf6hJk9m_2e9')` | A printed ref from this page's latest snapshot, not a raw backend ID |
 | `page.locator('#search')` | Standard CSS in the main frame; exactly one accessible element |
 | `page.getByRole('button', {name:'Save'})` | Exact native AX role/name by default; `exact:false` uses a case-sensitive name substring |
@@ -108,6 +108,17 @@ Full snapshots preserve table/row/cell relations, values, named context and
 content. Interactive mode omits reading text. Refs expire on the next snapshot,
 raw call, action or document change. Never guess, parse into backend IDs, or
 reuse old refs. Fresh role/CSS locators resolve anew.
+
+The accessibility tree lists what the page holds, not only what a person sees.
+A whole-page snapshot therefore ends with two notes when they apply: controls
+`listed above, but not visible to a person` (positioned off-screen, clipped to
+nothing, or clipped away by their container) and `text listed in full above
+that the screen cuts off` (an ellipsis, a narrow table or grid cell). Treat
+those as a user would: do not report such a control as shown, and do not rely
+on a full name the screen truncates to tell two items apart. Only the
+unambiguous kinds are reported; a transparent or sizeless control is not, since
+it is often the native input behind a styled one. Pass `{ unseen: false }` to
+leave the notes out; scoped reads (`ref`, `selector`, `frameId`) never add them.
 
 Diffs are managed per matching snapshot scope and ignore printed ref churn. The
 first diff is the full tree; unchanged content returns `(no changes)`. Depth
