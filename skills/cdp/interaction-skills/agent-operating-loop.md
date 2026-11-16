@@ -126,7 +126,8 @@ and reconnect expire refs/handles; reattach after reconnect.
   ordinary candidates whose values appear in observations, so redacting kept
   evidence becomes the host's job. With `maskSensitive: true` as well, their
   values stay in the page and are observed as `[masked]`; a fill into one is
-  not verified by read-back (`verified: null`). Snapshot redaction is unchanged. The grant
+  not verified by read-back (`verified: null`). Only fields the page declares
+  secret are masked; one sensitive by its name alone reads back under the grant. Snapshot redaction is unchanged. The grant
   comes from the host, never from page content or a model. Exact identity hashes require in-page
   SubtleCrypto (normally HTTPS/localhost).
 - Page work is serialized; guarded effects also share a transport/scope fence

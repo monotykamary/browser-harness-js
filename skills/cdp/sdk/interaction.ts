@@ -794,13 +794,18 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   };
 
   const sensitiveName = /pass(?:word|code|phrase)?|secret|token|api[\s_-]*key|auth|credential|security|user[\s_-]*name|login|full[\s_-]*name|first[\s_-]*name|last[\s_-]*name|surname|otp|one[\s_-]*time|mfa|2fa|\bpin\b|ssn|social[\s_-]*security|credit|card|cvv|cvc|iban|routing|account|bank|birth|\bdob\b|e[\s_-]*mail|phone|\btel\b|mobile|address|postal|zip/i;
-  // Credential and personal-data fields, judged whatever the host granted.
-  const sensitiveField = el => {
+  // What the page itself declares secret: its type, its autocomplete, a private mark. No guess from a name.
+  const declaredSensitive = el => {
     if (el.type === 'password' || el.hasAttribute('data-private') || el.hasAttribute('data-sensitive')) return true;
     const autocomplete = el.getAttribute('autocomplete') || '';
     if (tooLong(autocomplete, LIMITS.text)) return true;
     const tokens = autocomplete.toLowerCase().split(/\s+/);
-    if (tokens.some(token => token.includes('password') || token.startsWith('cc-') || token === 'one-time-code')) return true;
+    return tokens.some(token => token.includes('password') || token.startsWith('cc-') || token === 'one-time-code');
+  };
+  // Credential and personal-data fields, judged whatever the host granted.
+  const sensitiveField = el => {
+    if (declaredSensitive(el)) return true;
+    const autocomplete = el.getAttribute('autocomplete') || '';
     // Inspect every naming source, not only the winning accessible label. False positives are intentional.
     const names = ['name', 'id', 'aria-label', 'title', 'placeholder'].map(key => el.getAttribute(key) || '');
     if (el.labels && el.labels.length > LIMITS.labels) {
@@ -817,8 +822,11 @@ const projection = String.raw`async function(allowedOrigins, maxElements, truste
   // Without the host's grant, credential and personal-data fields are never offered.
   const secure = el => !allowSensitive && sensitiveField(el);
   const privateMarked = el => !allowSensitive && !!closestComposed(el, '[data-private], [data-sensitive]');
-  // Under the grant with masking, a sensitive field is offered and typed into, but its value never leaves the page.
-  const masked = el => maskSensitive && (sensitiveField(el) || !!closestComposed(el, '[data-private], [data-sensitive]'));
+  // Under the grant with masking, a field the page declares secret is offered and typed into, but its value never
+  // leaves the page. Only a declared one: the name list errs toward hiding, which is right for what is not offered
+  // without the grant, but under the grant it masked an ordinary username, first name or postal code, so a host could
+  // not read back what it had typed; and the list reads one language only.
+  const masked = el => maskSensitive && (declaredSensitive(el) || !!closestComposed(el, '[data-private], [data-sensitive]'));
 
   // Native semantics: the implicit role and how the element is operated.
   const native = el => {

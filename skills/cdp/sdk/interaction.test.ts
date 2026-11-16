@@ -925,19 +925,22 @@ test('native time, month, week and datetime controls take their own format, set 
   controller.close(); synthetic.close();
 });
 
-test('maskSensitive: under the grant, sensitive values stay in the page as [masked]; empty stays empty', async () => {
+test('maskSensitive: under the grant, values the page declares secret stay in the page as [masked]; a field only named like one reads back', async () => {
   const password = new InputFixture('password'); password.attrs['aria-label'] = 'Password'; password.value = 'PRIVATE_RAW_SENTINEL';
-  const named = new InputFixture(); named.attrs.name = 'first_name'; named.value = 'PRIVATE_RAW_SENTINEL';
+  // Sensitive by its name alone (first_name): not offered without the grant, but readable under it, so a host can
+  // verify what it typed. Declared ones (a type, an autocomplete, a private mark) stay masked.
+  const named = new InputFixture(); named.attrs.name = 'first_name'; named.value = 'Avery';
+  const card = new InputFixture(); card.attrs.autocomplete = 'cc-number'; card.value = 'PRIVATE_RAW_SENTINEL';
   const marked = new InputFixture(); marked.parentElement = new ElementFixture('DIV'); marked.parentElement.attrs['data-private'] = '';
   const plain = new InputFixture(); plain.value = 'visible';
   const observe = async (options: Record<string, boolean>) => {
     const session = new FixtureSession(); const page = session.pages.get('one')!;
-    page.nodes = [password, named, marked, plain]; page.refreshNodes();
+    page.nodes = [password, named, card, marked, plain]; page.refreshNodes();
     const controller = new InteractionController(session, { allowedOrigins: ['https://allowed.test'], ...options });
     return { controller, seen: await controller.observe({ scope }) };
   };
   const masked = await observe({ allowSensitive: true, maskSensitive: true });
-  assert.deepEqual(masked.seen.candidates.map(c => c.value), ['[masked]', '[masked]', '', 'visible']);
+  assert.deepEqual(masked.seen.candidates.map(c => c.value), ['[masked]', 'Avery', '[masked]', '', 'visible']);
   assert.ok(!JSON.stringify(masked.seen).includes('PRIVATE_RAW_SENTINEL'));
   assert.equal((await masked.controller.act(action(masked.seen, 0, 'type', 'hunter2'))).status, 'executed');
   assert.equal(password.value, 'hunter2');

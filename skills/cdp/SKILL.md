@@ -138,7 +138,11 @@ never page content or a model's judgment. Embedding hosts may set
 omitted); the daemon only sees it if it was started with it. Add
 `maskSensitive: true` to keep those values in the page: the fields are still
 offered and filled, but observed as `[masked]`, and a fill into one returns
-`verified: null` instead of reading the secret back.
+`verified: null` instead of reading the secret back. Masking covers what the page
+declares secret (a password type, a secret `autocomplete`, a `data-private` /
+`data-sensitive` mark); a field that is sensitive only by its name (a username,
+a first name, a postal code) is readable under the grant, so a fill into it is
+verified.
 
 `fill` types the way a person does: a real click into the field, select-all
 (Cmd+A on macOS, Ctrl+A elsewhere), then a key press per character a US key
