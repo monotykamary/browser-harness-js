@@ -7,7 +7,11 @@
  * Browser.grantPermissions maps through chrome.contentSettings.
  *
  * Connects to ws://127.0.0.1:<port>/extension (default 9876, same as
- * CDP_REPL_PORT). Last-writer-wins on the daemon side.
+ * CDP_REPL_PORT) with ?id=<instanceId>&label=<label>&v=<version>. Each
+ * Chromium profile (an Ardia space, a Chrome person) runs its own copy of
+ * this worker and keeps its own instanceId in chrome.storage.local, so the
+ * daemon can hold one socket per profile and the agent picks one by id or
+ * label. chrome.tabs / chrome.windows only ever see this profile's tabs.
  */
 
 const DEFAULT_PORT = 9876;
@@ -19,8 +23,11 @@ const RECONNECT_MAX_MS = 5_000;
 let ws = null;
 let reconnectMs = RECONNECT_MIN_MS;
 let reconnectTimer = null;
+let connecting = false;
 let autoAttach = false;
 let discoverTargets = false;
+/** @type {Promise<{ id: string, label: string }> | null} */
+let identityPromise = null;
 
 /** sessionId -> { debuggee, targetId, tabId? } */
 const sessions = new Map();
@@ -145,16 +152,45 @@ function port() {
   return DEFAULT_PORT;
 }
 
-function hubUrl() {
-  return 'ws://127.0.0.1:' + port() + '/extension';
+/** Stable per-profile identity; storage.local is per profile, so each space gets its own. */
+function loadIdentity() {
+  if (!identityPromise) {
+    identityPromise = (async () => {
+      const got = await chrome.storage.local.get(['bhInstanceId', 'bhLabel']);
+      let id = got.bhInstanceId;
+      if (typeof id !== 'string' || !id) {
+        id = crypto.randomUUID();
+        await chrome.storage.local.set({ bhInstanceId: id });
+      }
+      return { id, label: typeof got.bhLabel === 'string' ? got.bhLabel : '' };
+    })();
+    identityPromise.catch(() => { identityPromise = null; });
+  }
+  return identityPromise;
+}
+
+function hubUrl(identity) {
+  const q = new URLSearchParams({ id: identity.id, v: chrome.runtime.getManifest().version });
+  if (identity.label) q.set('label', identity.label);
+  return 'ws://127.0.0.1:' + port() + '/extension?' + q.toString();
 }
 
 function connect() {
+  if (connecting) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  connecting = true;
+  loadIdentity().then(
+    (identity) => { connecting = false; openSocket(identity); },
+    () => { connecting = false; scheduleReconnect(); },
+  );
+}
+
+function openSocket(identity) {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
   disconnect();
   let socket;
   try {
-    socket = new WebSocket(hubUrl());
+    socket = new WebSocket(hubUrl(identity));
   } catch {
     scheduleReconnect();
     return;
@@ -250,6 +286,8 @@ async function dispatch(method, params, sessionId) {
         userAgent: navigator.userAgent,
         jsVersion: '',
       };
+    case 'Extension.getInfo': return getInfo();
+    case 'Extension.setLabel': return setLabel(params);
     case 'Browser.getWindowForTarget': return getWindowForTarget(params);
     case 'Browser.getWindowBounds': return getWindowBounds(params);
     case 'Browser.setWindowBounds': return setWindowBounds(params);
@@ -274,13 +312,38 @@ async function dispatch(method, params, sessionId) {
     default:
       break;
   }
-  if (method.startsWith('Target.') || method.startsWith('Browser.') || method.startsWith('Chrome.')) {
+  if (method.startsWith('Target.') || method.startsWith('Browser.') || method.startsWith('Chrome.') || method.startsWith('Extension.')) {
     throw new Error(method + ' is not available over the extension transport');
   }
   if (!sessionId) throw new Error('No sessionId for ' + method);
   const sess = sessions.get(sessionId);
   if (!sess) throw new Error('Session with given id not found');
   return await sendCommand(sess.debuggee, method, params);
+}
+
+async function getInfo() {
+  const identity = await loadIdentity();
+  const tabs = (await chrome.tabs.query({})).filter((t) => t.id != null);
+  return {
+    instanceId: identity.id,
+    label: identity.label,
+    version: chrome.runtime.getManifest().version,
+    tabCount: tabs.length,
+    tabs: tabs.slice(0, 50).map((t) => ({
+      targetId: String(t.id),
+      url: t.url || '',
+      title: t.title || '',
+      active: Boolean(t.active),
+    })),
+  };
+}
+
+async function setLabel(params) {
+  const label = String(params.label ?? '').trim().slice(0, 128);
+  const identity = await loadIdentity();
+  await chrome.storage.local.set({ bhLabel: label });
+  identity.label = label;
+  return { instanceId: identity.id, label };
 }
 
 async function sendCommand(debuggee, method, params) {

@@ -103,7 +103,7 @@ test('reconnect preserves explicit authorized settings and refuses scoped replay
   await assert.rejects(session._call('Runtime.evaluate', {}, { sessionId: 'old-scoped' }), /reattach/);
   assert.deepEqual(captured, [options, options]);
   assert.equal(wire.sent.length, 0);
-  const replacement = new FakeWire(); session.adoptExtension(replacement);
+  resetExtensionHub(); const replacement = new FakeWire(); session.adoptExtension(setExtensionClient(replacement));
   assert.equal(session.getTransport(), 'cdp');
   await assert.rejects(session._call('Input.insertText', { text: 'no' }, { sessionId: 'sid', expectedGeneration: generation }), /generation/);
   assert.equal(wire.sent.length, 0);
@@ -115,9 +115,11 @@ test('extension reconnect stays extension-only and connection replacement reject
   const session = new Session(); await session.connect({ transport: 'extension', autoAllow: false, timeoutMs: 20 });
   first.send = data => { first.sent.push(data); };
   const effect = session._call('Input.insertText', { text: 'one' }, { sessionId: 'sid' });
-  const rejected = assert.rejects(effect, /replaced/);
+  const rejected = assert.rejects(effect, /replaced|closed/);
   const generation = session.getConnectionGeneration();
-  const second = new FakeWire(); session.adoptExtension(second); await rejected;
+  // Same instance reconnecting (worker restart): the hub swaps its socket and the pinned Session follows.
+  const second = new FakeWire(); session.adoptExtension(setExtensionClient(second)); await rejected;
+  assert.equal(session.getTransport(), 'extension');
   assert.ok(session.getConnectionGeneration() > generation); assert.equal(second.sent.length, 0);
   second.close(); resetExtensionHub();
   await assert.rejects(session._call('Target.getTargets', {}), /waiting for the browser-harness-js extension/);
@@ -125,7 +127,7 @@ test('extension reconnect stays extension-only and connection replacement reject
 });
 
 test('real Session exposes a synchronous generation fence without reconnecting or replaying guarded calls', async () => {
-  const session = new Session(); const wire = new FakeWire(); session.adoptExtension(wire);
+  resetExtensionHub(); const session = new Session(); const wire = new FakeWire(); session.adoptExtension(setExtensionClient(wire));
   const generation = session.getConnectionGeneration();
   await session._call('Runtime.callFunctionOn', { objectId: 'guard', functionDeclaration: 'function() { return this.act(); }' },
     { sessionId: 'scoped', expectedGeneration: generation });
@@ -133,18 +135,67 @@ test('real Session exposes a synchronous generation fence without reconnecting o
   wire.close(); const disconnected = session.getConnectionGeneration(); assert.ok(disconnected > generation);
   session.connect = async () => { assert.fail('guarded dispatch must not reconnect/discover'); };
   await assert.rejects(session._call('Runtime.callFunctionOn', {}, { sessionId: 'scoped', expectedGeneration: disconnected }), /generation/);
-  const replacement = new FakeWire(); session.adoptExtension(replacement);
+  const replacement = new FakeWire(); session.adoptExtension(setExtensionClient(replacement));
   await assert.rejects(session._call('Runtime.callFunctionOn', {}, { sessionId: 'scoped', expectedGeneration: generation }), /generation/);
-  assert.equal(wire.sent.length, 1); assert.equal(replacement.sent.length, 0); session.close();
+  assert.equal(wire.sent.length, 1); assert.equal(replacement.sent.length, 0); session.close(); resetExtensionHub();
 });
 
 test('page commands keep the active target session while extension commands route through the browser session', async () => {
-  const session = new Session(); const wire = new FakeWire(); session.adoptExtension(wire);
+  resetExtensionHub(); const session = new Session(); const wire = new FakeWire(); session.adoptExtension(setExtensionClient(wire));
   session.setActiveSession('page-session');
   await session._call('Page.navigate', {});
   await session._call('Extensions.getExtensions', {});
   assert.equal(JSON.parse(wire.sent[0]!).sessionId, 'page-session');
-  assert.equal(JSON.parse(wire.sent[1]!).sessionId, undefined); session.close();
+  assert.equal(JSON.parse(wire.sent[1]!).sessionId, undefined); session.close(); resetExtensionHub();
+});
+
+test('two profiles\' extensions: auto connect refuses to guess, a selector picks one, the other never steals it', async () => {
+  resetExtensionHub();
+  const work = new FakeWire(); const home = new FakeWire();
+  setExtensionClient(work, { id: 'aaaaaaaa-work', label: 'Work' });
+  setExtensionClient(home, { id: 'bbbbbbbb-home' });
+  const session = new Session();
+  await assert.rejects(session.connect({ extensionWaitMs: 20 }), /2 browser-harness-js extensions are connected[\s\S]*aaaaaaaa-work \("Work"\)/);
+  assert.equal(session.isConnected(), false);
+
+  await session.connect({ extension: 'work' });
+  assert.equal(session.getExtension()?.id, 'aaaaaaaa-work');
+  await session._call('Target.getTargets', {});
+  assert.equal(work.sent.length, 1); assert.equal(home.sent.length, 0);
+
+  // Home's worker restarts and reconnects: it must not take the Session over.
+  const homeAgain = new FakeWire();
+  session.adoptExtension(setExtensionClient(homeAgain, { id: 'bbbbbbbb-home' }));
+  assert.equal(session.getExtension()?.id, 'aaaaaaaa-work');
+  assert.equal(home.readyState, WIRE_CLOSED);
+  assert.equal(work.readyState, WIRE_OPEN);
+
+  // Switch explicitly; the old profile's socket stays up for later.
+  await session.connect({ extension: 'bbbbbbbb' });
+  assert.equal(session.getExtension()?.id, 'bbbbbbbb-home');
+  assert.equal(work.readyState, WIRE_OPEN);
+  await session._call('Target.getTargets', {});
+  assert.equal(homeAgain.sent.length, 1);
+
+  // Work's worker drops: the pinned Session (on home) is untouched; a fresh Session still has to choose.
+  work.close();
+  assert.equal(session.getExtension()?.id, 'bbbbbbbb-home');
+  session.close();
+  assert.equal(homeAgain.readyState, WIRE_OPEN, 'closing the Session leaves the hub-owned socket up');
+  resetExtensionHub();
+});
+
+test('a pinned extension Session waits for its own profile and does not fall back to another', async () => {
+  resetExtensionHub();
+  setExtensionClient(new FakeWire(), { id: 'other-profile' });
+  const session = new Session();
+  await assert.rejects(session.connect({ extension: 'mine', timeoutMs: 20 }), /waiting for the browser-harness-js extension "mine"[\s\S]*other-profile/);
+  const pending = session.connect({ extension: 'mine', timeoutMs: 200 });
+  const mine = setExtensionClient(new FakeWire(), { id: 'mine-0001', label: 'Mine' });
+  session.adoptExtension(mine);
+  await pending;
+  assert.equal(session.getExtension()?.id, 'mine-0001');
+  session.close(); resetExtensionHub();
 });
 
 test('connect({ transport: "extension" }) fails closed when the extension is absent', async () => {
